@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.cardboardpoc"
+    namespace = "com.pps.cardboardpoc"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.cardboardpoc"
+        applicationId = "com.pps.cardboardpoc"
         minSdk = 24
         targetSdk = 34
         versionCode = 1

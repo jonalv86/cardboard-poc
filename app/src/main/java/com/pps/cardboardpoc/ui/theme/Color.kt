@@ -1,4 +1,4 @@
-package com.example.cardboardpoc.ui.theme
+package com.pps.cardboardpoc.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

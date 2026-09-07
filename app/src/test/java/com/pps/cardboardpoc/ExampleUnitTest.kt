@@ -1,4 +1,4 @@
-package com.example.cardboardpoc
+package com.pps.cardboardpoc
 
 import org.junit.Test
 
