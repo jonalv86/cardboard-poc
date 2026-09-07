@@ -23,6 +23,8 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.util.Log
+import android.view.Display
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 
@@ -39,6 +41,9 @@ class ScreenCaptureService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
+    private var displayListener: DisplayManager.DisplayListener? = null
+    private var captureWidth = 0
+    private var captureHeight = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -100,34 +105,93 @@ class ScreenCaptureService : Service() {
             }
         }, mainHandler)
 
-        val metrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
-
         overlay = StereoOverlay(this).apply { show() }
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
-        val thread = HandlerThread("CaptureThread").apply { start() }
-        captureThread = thread
+        captureThread = HandlerThread("CaptureThread").apply { start() }
+
+        rebuildCapture()
+        registerDisplayListener()
+    }
+
+    /**
+     * Crea el ImageReader y el VirtualDisplay con el tamaño actual de la pantalla, o los reajusta si
+     * ese tamaño cambió. Corre siempre en el main thread.
+     */
+    private fun rebuildCapture() {
+        val projection = mediaProjection ?: return
+        val thread = captureThread ?: return
+
+        val metrics = currentDisplayMetrics()
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        if (width == captureWidth && height == captureHeight) return
+
+        captureWidth = width
+        captureHeight = height
+
+        // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
+        // reader cerrado, la captura se corta.
+        virtualDisplay?.setSurface(null)
+        imageReader?.close()
 
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         imageReader = reader
         reader.setOnImageAvailableListener({ source ->
-            val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val image = try {
+                source.acquireLatestImage()
+            } catch (_: IllegalStateException) {
+                // El reader se cerró desde el main thread mientras llegaba este frame.
+                null
+            } ?: return@setOnImageAvailableListener
+
             val bitmap = imageToBitmap(image)
             image.close()
             mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
 
-        virtualDisplay = projection.createVirtualDisplay(
-            "CardboardPocCapture", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface, null, null
+        val screen = currentDisplayMetrics()
+        Log.d(
+            TAG,
+            "VirtualDisplay=${width}x${height} dpi=${metrics.densityDpi} | " +
+                "pantalla real=${screen.widthPixels}x${screen.heightPixels} dpi=${screen.densityDpi}"
         )
+
+        val display = virtualDisplay
+        if (display == null) {
+            virtualDisplay = projection.createVirtualDisplay(
+                "CardboardPocCapture", width, height, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface, null, null
+            )
+        } else {
+            display.resize(width, height, metrics.densityDpi)
+            display.setSurface(reader.surface)
+        }
+    }
+
+    /**
+     * Sigue los cambios de la pantalla real. Sin esto el buffer queda con el tamaño que tenía al
+     * arrancar la captura, y al rotar el frame llega encajado con bandas negras dentro del tamaño viejo.
+     */
+    private fun registerDisplayListener() {
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY) rebuildCapture()
+            }
+        }
+        displayListener = listener
+        getSystemService(DisplayManager::class.java).registerDisplayListener(listener, mainHandler)
+    }
+
+    private fun currentDisplayMetrics(): DisplayMetrics {
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
+        return metrics
     }
 
     /**
@@ -135,6 +199,14 @@ class ScreenCaptureService : Service() {
      * que una segunda entrada (stop() dispara onStop(), que vuelve a llamar acá) no toque nada dos veces.
      */
     private fun releaseCapture() {
+        // Primero el listener: si no, una rotación durante el teardown reconstruiría la captura.
+        val listener = displayListener
+        displayListener = null
+        listener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }
+
+        captureWidth = 0
+        captureHeight = 0
+
         val display = virtualDisplay
         virtualDisplay = null
         display?.release()
@@ -165,7 +237,17 @@ class ScreenCaptureService : Service() {
             image.width + rowPadding / pixelStride, image.height, Bitmap.Config.ARGB_8888
         )
         bitmap.copyPixelsFromBuffer(plane.buffer)
-        return Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+
+        // El buffer del display espejado puede traer alpha < 255; sin descartar el canal alpha el
+        // frame se dibuja mezclado con lo que haya detrás.
+        val frame = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+            .apply { setHasAlpha(false) }
+        Log.d(
+            TAG,
+            "bitmap=${frame.width}x${frame.height} | image=${image.width}x${image.height} " +
+                "rowStride=$rowStride pixelStride=$pixelStride padding=$rowPadding"
+        )
+        return frame
     }
 
     private fun createNotificationChannel() {
@@ -195,6 +277,7 @@ class ScreenCaptureService : Service() {
     }
 
     companion object {
+        private const val TAG = "CardboardCapture"
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "screen_capture_channel"
         private const val ACTION_START = "com.pps.cardboardpoc.action.START_CAPTURE"
