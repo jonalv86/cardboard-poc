@@ -4,6 +4,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- El Cardboard SDK declara estos permisos para escanear el QR del visor y detectarlo por
+         NFC. Sin perfil de visor el SDK usa los parámetros de Cardboard V1, así que nada de eso
+         corre y el usuario no tiene por qué ver un pedido de cámara. -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.NFC" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -30,6 +38,9 @@
             android:name=".ScreenCaptureService"
             android:foregroundServiceType="mediaProjection"
             android:exported="false" />
+
+        <activity android:name="com.google.cardboard.sdk.QrCodeCaptureActivity" tools:node="remove" />
+        <activity android:name="com.google.cardboard.sdk.HeadsetDetectionActivity" tools:node="remove" />
     </application>
 
 </manifest>

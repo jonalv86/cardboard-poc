@@ -7,6 +7,17 @@
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+
+# Configuracion local del IDE: depende del JDK y del Android Studio de cada maquina,
+# asi que versionarla genera conflictos en cada pull sin aportar nada.
+# Se versiona a proposito /.idea/codeStyles, que si es comun al equipo.
+/.idea/misc.xml
+/.idea/gradle.xml
+/.idea/compiler.xml
+/.idea/kotlinc.xml
+/.idea/migrations.xml
+/.idea/deploymentTargetSelector.xml
+
 .DS_Store
 /build
 /captures

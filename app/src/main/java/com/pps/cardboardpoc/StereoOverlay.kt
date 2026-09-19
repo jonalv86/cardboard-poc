@@ -1,81 +1,106 @@
 package com.pps.cardboardpoc
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.os.Build
-import android.util.Log
-import android.view.LayoutInflater
+import android.os.Handler
+import android.os.Looper
+import android.view.ContextThemeWrapper
+import android.view.Display
 import android.view.View
 import android.view.WindowManager
-import android.widget.ImageView
+import com.google.cardboard.sdk.CardboardView
+import com.google.cardboard.sdk.Initialize
 
 /**
- * Ventana flotante que dibuja el frame capturado duplicado en dos mitades, para un visor Cardboard.
- * Vive por encima de cualquier app en primer plano, así que sobrevive a que el sistema mande
- * MainActivity a segundo plano.
+ * Ventana flotante que dibuja el frame capturado en estéreo con el Cardboard SDK, para un visor
+ * Cardboard. Vive por encima de cualquier app en primer plano, así que sobrevive a que el sistema
+ * mande MainActivity a segundo plano.
  */
 class StereoOverlay(private val context: Context) {
 
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val renderer = CardboardOverlayRenderer()
 
-    private var root: View? = null
-    private var eyeLeft: ImageView? = null
-    private var eyeRight: ImageView? = null
-    private var sizeLogged = false
+    private var cardboardView: CardboardView? = null
 
     /** Agrega la ventana al WindowManager. No hace nada si ya está agregada. */
-    @SuppressLint("InflateParams")
     fun show() {
-        if (root != null) return
+        if (cardboardView != null) return
 
-        // El root de una ventana no tiene parent al inflarse, así que pierde los layout_width y
-        // layout_height del XML: los define el WindowManager con estos params.
+        val sdkContext = buildSdkContext()
+        // Carga la librería nativa y guarda la JavaVM y el contexto que el SDK va a consultar
+        // después desde su capa nativa.
+        Initialize.initialize(sdkContext)
+
         val params = buildLayoutParams()
-        val view = LayoutInflater.from(context).inflate(R.layout.overlay_stereo, null)
+        val view = CardboardView(sdkContext)
         view.layoutParams = params
+        view.setRenderer(renderer)
+        view.setStereoRenderMode(true)
+        view.setOnBackButtonClick { context.startService(ScreenCaptureService.stopIntent(context)) }
+        hideSettingsButton(view)
+        view.onResume()
+
         windowManager.addView(view, params)
-        root = view
-        eyeLeft = view.findViewById(R.id.eyeLeft)
-        eyeRight = view.findViewById(R.id.eyeRight)
+        cardboardView = view
     }
 
-    /** Publica un frame nuevo en los dos ojos. Debe invocarse desde el main thread. */
+    /** Publica un frame nuevo para los dos ojos. Se puede llamar desde cualquier hilo. */
     fun updateFrame(bitmap: Bitmap) {
-        val left = eyeLeft ?: return
-        val right = eyeRight ?: return
-
-        if (!sizeLogged && left.width > 0) {
-            sizeLogged = true
-            Log.d(
-                TAG,
-                "root=${root?.width}x${root?.height} ojoIzq=${left.width}x${left.height} " +
-                    "ojoDer=${right.width}x${right.height} bitmap=${bitmap.width}x${bitmap.height}"
-            )
-        }
-
-        left.setImageBitmap(bitmap)
-        right.setImageBitmap(bitmap)
+        renderer.pushFrame(bitmap)
     }
 
     /** Quita la ventana. No hace nada si no está agregada. */
     fun hide() {
-        val view = root ?: return
-        root = null
-        eyeLeft = null
-        eyeRight = null
-        sizeLogged = false
+        val view = cardboardView ?: return
+        cardboardView = null
+
+        view.onPause()
         try {
             windowManager.removeView(view)
         } catch (_: IllegalArgumentException) {
             // El sistema pudo haber quitado la ventana por su cuenta (permiso revocado, por ejemplo).
         }
+        view.onDestroy()
     }
 
-    private companion object {
-        const val TAG = "CardboardCapture"
+    /**
+     * Arma el contexto que consume el SDK.
+     *
+     * Para resolver la densidad de pantalla, el SDK llama a `context.getDisplay()` desde su capa
+     * nativa. Un Context de Service no está asociado a ninguna pantalla y tira
+     * UnsupportedOperationException; la excepción queda pendiente cuando vuelve a código nativo y
+     * CheckJNI aborta el proceso en la siguiente llamada JNI. `createDisplayContext` devuelve un
+     * contexto que sí está asociado a la pantalla.
+     *
+     * El tema encima hace falta porque el SDK infla su propio layout, con estilos propios.
+     */
+    private fun buildSdkContext(): Context {
+        val display = context.getSystemService(DisplayManager::class.java)
+            .getDisplay(Display.DEFAULT_DISPLAY)
+        return ContextThemeWrapper(
+            context.createDisplayContext(display), R.style.Theme_CardboardPOC
+        )
+    }
+
+    /**
+     * Deja inerte el engranaje del UI del SDK, que dispara el escaneo del QR del visor: sin perfil
+     * escaneado el SDK usa los parámetros de Cardboard V1, y la activity del escáner ni siquiera
+     * está declarada en el manifest.
+     */
+    private fun hideSettingsButton(view: CardboardView) {
+        view.setOnSettingsButtonClick { }
+        // setStereoRenderMode muestra los botones con un post al main looper, así que ocultarlo en
+        // el acto no sobreviviría: hay que encolarlo detrás de ese post.
+        mainHandler.post {
+            view.findViewById<View>(com.google.cardboard.sdk.R.id.ui_settings_button)?.visibility =
+                View.GONE
+        }
     }
 
     private fun buildLayoutParams(): WindowManager.LayoutParams {
