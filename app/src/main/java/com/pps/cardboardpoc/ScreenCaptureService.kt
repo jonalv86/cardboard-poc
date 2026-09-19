@@ -10,7 +10,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -132,6 +134,7 @@ class ScreenCaptureService : Service() {
 
         captureWidth = width
         captureHeight = height
+        JoystickManager.setScreenSize(width, height)
 
         // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
         // reader cerrado, la captura se corta.
@@ -151,7 +154,22 @@ class ScreenCaptureService : Service() {
             val bitmap = imageToBitmap(image)
             image.close()
             logFrameContent(bitmap)
-            mainHandler.post { overlay?.updateFrame(bitmap) }
+
+            // Dibujar el cursor virtual en el bitmap antes de pasarlo al overlay estéreo
+            val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = Canvas(mutableBitmap)
+            val paint = Paint().apply {
+                color = Color.RED
+                style = Paint.Style.FILL
+                isAntiAlias = true
+            }
+            // Dibujar un círculo exterior rojo
+            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 20f, paint)
+            // Dibujar un punto central blanco para mayor contraste
+            paint.color = Color.WHITE
+            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 8f, paint)
+
+            mainHandler.post { overlay?.updateFrame(mutableBitmap) }
         }, Handler(thread.looper))
 
         val screen = currentDisplayMetrics()
