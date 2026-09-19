@@ -96,13 +96,17 @@ class StereoOverlay(private val context: Context) {
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                // FLAG_SECURE excluye la ventana del espejado de MediaProjection. Sin esto, al
+                // compartir la pantalla completa el overlay forma parte de lo que se captura y
+                // termina dibujándose dentro de sí mismo, generación tras generación.
+                WindowManager.LayoutParams.FLAG_SECURE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             // OPAQUE evita que el compositor mezcle la ventana con las capas de abajo: se ve solo
             // el contenido capturado. Con TRANSLUCENT la app real se transparenta por detrás.
-            PixelFormat.OPAQUE
+            PixelFormat.OPAQUE // PixelFormat.TRANSLUCENT para que tome los touch de fondo
         ).apply {
-            alpha = 1f
+            alpha = 1f //0.7f Para que se vea el fondo
 
             // Desde Android 11 los flags LAYOUT_IN_SCREEN / LAYOUT_NO_LIMITS no bastan: sin renunciar
             // a los insets la ventana se encoge y deja ver la app real por las franjas de las barras.
