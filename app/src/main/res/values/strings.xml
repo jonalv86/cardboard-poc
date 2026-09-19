@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">CardboardPOC</string>
+    <string name="eye_left">Ojo izquierdo</string>
+    <string name="eye_right">Ojo derecho</string>
 </resources>

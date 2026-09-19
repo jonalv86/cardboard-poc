@@ -2,50 +2,50 @@ package com.pps.cardboardpoc
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.PixelFormat
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
-import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.util.DisplayMetrics
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.pps.cardboardpoc.ui.theme.CardboardPOCTheme
-import androidx.compose.foundation.Image as ComposeImage
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
-    private val latestFrame = mutableStateOf<Bitmap?>(null)
+    private val overlayGranted = mutableStateOf(false)
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            startCapture(result.resultCode, result.data!!)
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            ContextCompat.startForegroundService(
+                this, ScreenCaptureService.startIntent(this, result.resultCode, data)
+            )
         }
+    }
+
+    private val overlayPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        // ACTION_MANAGE_OVERLAY_PERMISSION siempre vuelve con RESULT_CANCELED: hay que reconsultar.
+        if (Settings.canDrawOverlays(this)) requestCapture()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,91 +56,68 @@ class MainActivity : ComponentActivity() {
         setContent {
             CardboardPOCTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    CaptureScreen(frame = latestFrame.value, onStartClick = { requestCapture() })
+                    CaptureScreen(
+                        overlayGranted = overlayGranted.value,
+                        onStartClick = { requestCapture() },
+                        onStopClick = { stopCapture() }
+                    )
                 }
             }
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        overlayGranted.value = Settings.canDrawOverlays(this)
+    }
+
     private fun requestCapture() {
+        // El permiso de overlay no se pide con un diálogo: hay que mandar al usuario a Ajustes.
+        if (!Settings.canDrawOverlays(this)) {
+            overlayPermissionLauncher.launch(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            return
+        }
+
         // Android 14+ exige un foreground service activo antes de pedir MediaProjection
         ContextCompat.startForegroundService(this, Intent(this, ScreenCaptureService::class.java))
         screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
     }
 
-    private fun startCapture(resultCode: Int, data: Intent) {
-        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
-
-        // Obligatorio en Android 14+: registrar el callback ANTES de createVirtualDisplay,
-        // si no, tira IllegalStateException y la app se cierra.
-        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                virtualDisplay?.release()
-                imageReader?.close()
-                virtualDisplay = null
-                imageReader = null
-            }
-        }, Handler(Looper.getMainLooper()))
-
-        val metrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getRealMetrics(metrics)
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
-
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        val mainHandler = Handler(Looper.getMainLooper())
-
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            val bitmap = imageToBitmap(image)
-            image.close()
-            mainHandler.post { latestFrame.value = bitmap }
-        }, mainHandler)
-
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "CardboardPocCapture", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, null
-        )
-    }
-
-    private fun imageToBitmap(image: Image): Bitmap {
-        val plane = image.planes[0]
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * image.width
-        val bitmap = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride, image.height, Bitmap.Config.ARGB_8888
-        )
-        bitmap.copyPixelsFromBuffer(plane.buffer)
-        return Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.stop()
+    private fun stopCapture() {
         stopService(Intent(this, ScreenCaptureService::class.java))
     }
 }
 
 @Composable
-fun CaptureScreen(frame: Bitmap?, onStartClick: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize()) {
+fun CaptureScreen(
+    overlayGranted: Boolean,
+    onStartClick: () -> Unit,
+    onStopClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Button(onClick = onStartClick, modifier = Modifier.fillMaxWidth()) {
             Text("Iniciar captura de pantalla")
         }
-        if (frame != null) {
-            val imageBitmap = frame.asImageBitmap()
-            Row(modifier = Modifier.fillMaxSize()) {
-                ComposeImage(imageBitmap, "Ojo izquierdo", modifier = Modifier.weight(1f).fillMaxSize())
-                ComposeImage(imageBitmap, "Ojo derecho", modifier = Modifier.weight(1f).fillMaxSize())
-            }
-        } else {
-            Text("Todavía no hay captura. Tocá el botón y aceptá el permiso del sistema.")
+        OutlinedButton(onClick = onStopClick, modifier = Modifier.fillMaxWidth()) {
+            Text("Detener captura")
         }
+        Text(
+            if (overlayGranted) {
+                "Tocá Iniciar y elegí \"Una sola app\". La vista estéreo se dibuja en una ventana " +
+                    "flotante sobre esa app, así que se sigue viendo cuando el sistema la trae al frente."
+            } else {
+                "Falta el permiso \"Mostrar sobre otras apps\". Tocá Iniciar para ir a Ajustes y habilitarlo."
+            }
+        )
     }
 }
