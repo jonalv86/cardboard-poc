@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -44,6 +45,7 @@ class ScreenCaptureService : Service() {
     private var displayListener: DisplayManager.DisplayListener? = null
     private var captureWidth = 0
     private var captureHeight = 0
+    private var framesSeen = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -148,6 +150,7 @@ class ScreenCaptureService : Service() {
 
             val bitmap = imageToBitmap(image)
             image.close()
+            logFrameContent(bitmap)
             mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
 
@@ -185,6 +188,29 @@ class ScreenCaptureService : Service() {
         }
         displayListener = listener
         getSystemService(DisplayManager::class.java).registerDisplayListener(listener, mainHandler)
+    }
+
+    /**
+     * Muestrea una grilla del frame para distinguir una captura con contenido real de una que llega
+     * en negro porque el compositor descartó lo que había en pantalla.
+     */
+    private fun logFrameContent(frame: Bitmap) {
+        if (framesSeen++ % 60 != 0) return
+
+        var conContenido = 0
+        var lumaMax = 0
+        for (fila in 0 until 10) {
+            for (columna in 0 until 10) {
+                val pixel = frame.getPixel(
+                    frame.width * columna / 10 + frame.width / 20,
+                    frame.height * fila / 10 + frame.height / 20
+                )
+                val luma = maxOf(Color.red(pixel), Color.green(pixel), Color.blue(pixel))
+                if (luma > 8) conContenido++
+                if (luma > lumaMax) lumaMax = luma
+            }
+        }
+        Log.d(TAG, "muestreo: $conContenido/100 pixeles con contenido, luma max=$lumaMax")
     }
 
     private fun currentDisplayMetrics(): DisplayMetrics {
