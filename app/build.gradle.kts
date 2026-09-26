@@ -5,11 +5,12 @@ plugins {
 
 android {
     namespace = "com.pps.cardboardpoc"
-    compileSdk = 34
+    // El .aar del Cardboard SDK se compila contra la API 35 y declara minSdk 26.
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.pps.cardboardpoc"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -27,11 +28,11 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -47,6 +48,15 @@ android {
 }
 
 dependencies {
+
+    // El Cardboard SDK no se publica en ningún repositorio Maven: el .aar se compila desde
+    // github.com/googlevr/cardboard y se copia acá a mano. Un .aar local no arrastra sus
+    // dependencias, así que las cuatro que siguen van declaradas de más.
+    implementation(fileTree("libs") { include("*.aar") })
+    implementation(libs.androidx.appcompat)
+    implementation(libs.android.material)
+    implementation(libs.play.services.vision)
+    implementation(libs.protobuf.javalite)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
