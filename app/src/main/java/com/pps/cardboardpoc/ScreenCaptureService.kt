@@ -10,9 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -39,6 +37,9 @@ class ScreenCaptureService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /** Serializa el uso del ImageReader entre CaptureThread y el main thread, que lo cierra. */
+    private val captureLock = Any()
+
     private var overlay: StereoOverlay? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -54,28 +55,18 @@ class ScreenCaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Un arranque sin action solo pone el service en foreground: Android 14 lo exige activo
-        // antes de que MainActivity pida el permiso de captura.
         when (intent?.action) {
             ACTION_START -> {
                 @Suppress("DEPRECATION")
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 if (resultCode == Activity.RESULT_OK && resultData != null) {
+                    // El tipo mediaProjection solo se acepta una vez que el usuario aprobó la captura,
+                    // y getMediaProjection exige que el service ya esté en foreground.
+                    startForegroundAsProjection()
                     startCapture(resultCode, resultData)
                 }
             }
@@ -92,8 +83,28 @@ class ScreenCaptureService : Service() {
         super.onDestroy()
     }
 
+    private fun startForegroundAsProjection() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
     private fun startCapture(resultCode: Int, resultData: Intent) {
         if (mediaProjection != null) return
+
+        val host = JoystickManager.accessibilityService
+        if (host == null) {
+            Log.w(TAG, "servicio de accesibilidad inactivo: sin él no hay ventana estéreo")
+            stopSelf()
+            return
+        }
 
         val projectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -109,7 +120,9 @@ class ScreenCaptureService : Service() {
             }
         }, mainHandler)
 
-        overlay = StereoOverlay(this).apply { show() }
+        overlay = StereoOverlay(host).apply { show() }
+        isCapturing = true
+        host.setCaptureActive(true)
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -139,37 +152,26 @@ class ScreenCaptureService : Service() {
         // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
         // reader cerrado, la captura se corta.
         virtualDisplay?.setSurface(null)
-        imageReader?.close()
 
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        imageReader = reader
+        synchronized(captureLock) {
+            imageReader?.close()
+            imageReader = reader
+        }
         reader.setOnImageAvailableListener({ source ->
-            val image = try {
-                source.acquireLatestImage()
-            } catch (_: IllegalStateException) {
-                // El reader se cerró desde el main thread mientras llegaba este frame.
-                null
-            } ?: return@setOnImageAvailableListener
-
-            val bitmap = imageToBitmap(image)
-            image.close()
-            logFrameContent(bitmap)
-
-            // Dibujar el cursor virtual en el bitmap antes de pasarlo al overlay estéreo
-            val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(mutableBitmap)
-            val paint = Paint().apply {
-                color = Color.RED
-                style = Paint.Style.FILL
-                isAntiAlias = true
+            // El main thread cierra el reader al rotar o al detener la captura. Con el lock tomado
+            // el reader no se puede cerrar a mitad de la copia, y uno ya reemplazado se descarta.
+            val bitmap = synchronized(captureLock) {
+                if (source !== imageReader) return@setOnImageAvailableListener
+                val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
+                try {
+                    imageToBitmap(image)
+                } finally {
+                    image.close()
+                }
             }
-            // Dibujar un círculo exterior rojo
-            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 20f, paint)
-            // Dibujar un punto central blanco para mayor contraste
-            paint.color = Color.WHITE
-            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 8f, paint)
-
-            mainHandler.post { overlay?.updateFrame(mutableBitmap) }
+            logFrameContent(bitmap)
+            mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
 
         val screen = currentDisplayMetrics()
@@ -255,9 +257,11 @@ class ScreenCaptureService : Service() {
         virtualDisplay = null
         display?.release()
 
-        val reader = imageReader
-        imageReader = null
-        reader?.close()
+        synchronized(captureLock) {
+            val reader = imageReader
+            imageReader = null
+            reader?.close()
+        }
 
         val projection = mediaProjection
         mediaProjection = null
@@ -270,6 +274,10 @@ class ScreenCaptureService : Service() {
         val window = overlay
         overlay = null
         window?.hide()
+        if (isCapturing) {
+            isCapturing = false
+            JoystickManager.accessibilityService?.setCaptureActive(false)
+        }
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -328,6 +336,10 @@ class ScreenCaptureService : Service() {
         private const val ACTION_STOP = "com.pps.cardboardpoc.action.STOP_CAPTURE"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
+
+        /** Si hay una captura en curso, con su ventana estéreo. Solo se escribe desde el main thread. */
+        var isCapturing = false
+            private set
 
         /** Intent que arranca la captura con el token devuelto por el diálogo de MediaProjection. */
         fun startIntent(context: Context, resultCode: Int, resultData: Intent): Intent =
