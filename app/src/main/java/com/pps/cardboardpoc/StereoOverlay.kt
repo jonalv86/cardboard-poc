@@ -11,6 +11,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.Display
+import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import com.google.cardboard.sdk.CardboardView
@@ -34,6 +35,7 @@ class StereoOverlay(private val context: AccessibilityService) {
     private val renderer = CardboardOverlayRenderer()
 
     private var cardboardView: CardboardView? = null
+    private var backHitArea: View? = null
 
     /** Agrega la ventana al WindowManager. No hace nada si ya está agregada. */
     fun show() {
@@ -49,7 +51,7 @@ class StereoOverlay(private val context: AccessibilityService) {
         view.layoutParams = params
         view.setRenderer(renderer)
         view.setStereoRenderMode(true)
-        hideSdkButtons(view)
+        setUpSdkButtons(view)
         view.onResume()
 
         windowManager.addView(view, params)
@@ -68,12 +70,18 @@ class StereoOverlay(private val context: AccessibilityService) {
         cardboardView = null
 
         view.onPause()
+        removeWindow(view)
+        backHitArea?.let { removeWindow(it) }
+        backHitArea = null
+        view.onDestroy()
+    }
+
+    private fun removeWindow(view: View) {
         try {
             windowManager.removeView(view)
         } catch (_: IllegalArgumentException) {
-            // El sistema pudo haber quitado la ventana por su cuenta (permiso revocado, por ejemplo).
+            // El sistema pudo haber quitado la ventana por su cuenta (servicio desactivado, por ejemplo).
         }
-        view.onDestroy()
     }
 
     /**
@@ -96,20 +104,62 @@ class StereoOverlay(private val context: AccessibilityService) {
     }
 
     /**
-     * Oculta los dos botones del UI del SDK. El engranaje dispara el escaneo del QR del visor (sin
-     * perfil escaneado el SDK usa los parámetros de Cardboard V1, y la activity del escáner ni siquiera
-     * está declarada en el manifest), y la ventana no recibe toques, así que ninguno respondería.
+     * Oculta el engranaje del UI del SDK, que dispara el escaneo del QR del visor (sin perfil escaneado
+     * el SDK usa los parámetros de Cardboard V1, y la activity del escáner ni siquiera está declarada en
+     * el manifest), y conecta la X a una zona táctil propia que detiene la captura.
      */
-    private fun hideSdkButtons(view: CardboardView) {
+    private fun setUpSdkButtons(view: CardboardView) {
         view.setOnSettingsButtonClick { }
-        view.setOnBackButtonClick { }
-        // setStereoRenderMode muestra los botones con un post al main looper, así que ocultarlos en
-        // el acto no sobreviviría: hay que encolarlo detrás de ese post.
+        // setStereoRenderMode muestra los botones con un post al main looper, así que tocarlos en el
+        // acto no sobreviviría: hay que encolarlo detrás de ese post.
         mainHandler.post {
-            listOf(
-                com.google.cardboard.sdk.R.id.ui_settings_button,
-                com.google.cardboard.sdk.R.id.ui_back_button
-            ).forEach { view.findViewById<View>(it)?.visibility = View.GONE }
+            view.findViewById<View>(com.google.cardboard.sdk.R.id.ui_settings_button)?.visibility =
+                View.GONE
+            val back = view.findViewById<View>(com.google.cardboard.sdk.R.id.ui_back_button)
+                ?: return@post
+            back.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> placeBackHitArea(v) }
+            placeBackHitArea(back)
+        }
+    }
+
+    /**
+     * Ubica sobre la X del SDK una ventana transparente que sí recibe toques. La ventana estéreo es
+     * NOT_TOUCHABLE entera y Android no ofrece una API pública para hacer táctil solo una parte, así que
+     * la X por sí sola no respondería. Es para el dedo, con el celular fuera del visor: la X está en la
+     * esquina de la pantalla física, fuera de la imagen de cada ojo, donde el cursor no llega.
+     */
+    private fun placeBackHitArea(back: View) {
+        if (cardboardView == null || back.width == 0 || back.visibility != View.VISIBLE) return
+
+        val location = IntArray(2)
+        back.getLocationOnScreen(location)
+        val params = WindowManager.LayoutParams(
+            back.width,
+            back.height,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = location[0]
+            y = location[1]
+            ignoreInsets()
+        }
+
+        val hitArea = backHitArea
+        if (hitArea == null) {
+            val view = View(context).apply {
+                setOnClickListener {
+                    Log.d(TAG, "X del visor: se detiene la captura")
+                    context.startService(ScreenCaptureService.stopIntent(context))
+                }
+            }
+            windowManager.addView(view, params)
+            backHitArea = view
+        } else {
+            windowManager.updateViewLayout(hitArea, params)
         }
     }
 
@@ -134,16 +184,21 @@ class StereoOverlay(private val context: AccessibilityService) {
             PixelFormat.OPAQUE
         ).apply {
             alpha = 1f
+            ignoreInsets()
+        }
+    }
 
-            // Desde Android 11 los flags LAYOUT_IN_SCREEN / LAYOUT_NO_LIMITS no bastan: sin renunciar
-            // a los insets la ventana se encoge y deja ver la app real por las franjas de las barras.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                setFitInsetsTypes(0)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
+    /**
+     * Desde Android 11 los flags LAYOUT_IN_SCREEN / LAYOUT_NO_LIMITS no bastan: sin renunciar a los
+     * insets la ventana se encoge y deja ver la app real por las franjas de las barras. También deja a
+     * las dos ventanas en coordenadas de pantalla, que es lo que necesita la zona táctil de la X.
+     */
+    private fun WindowManager.LayoutParams.ignoreInsets() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            setFitInsetsTypes(0)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         }
     }
 
