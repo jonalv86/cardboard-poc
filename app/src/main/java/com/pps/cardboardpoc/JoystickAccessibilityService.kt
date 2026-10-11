@@ -21,6 +21,9 @@ class JoystickAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "JoystickAccService"
         private const val CAPTURE_TAG = "CardboardCapture"
+
+        // En modo mouse el control aparece como un dispositivo aparte, "VR BOX Mouse".
+        private const val VR_BOX_DEVICE_PREFIX = "VR BOX"
     }
     
     /**
@@ -32,24 +35,26 @@ class JoystickAccessibilityService : AccessibilityService() {
         Log.d(TAG, "Servicio de Accesibilidad Conectado")
         JoystickManager.accessibilityService = this
         
-        val info = serviceInfo
-        // FLAG_SEND_MOTION_EVENTS (API 31+) permite recibir eventos de movimiento en onMotionEvent
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            info.flags = info.flags or 0x00004000 // 0x00004000 es FLAG_SEND_MOTION_EVENTS
-            
-            // Usamos reflexión para configurar motionEventSources (API 33+) y evitar errores de compilación por API levels
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                try {
-                    val method = info.javaClass.getMethod("setMotionEventSources", Int::class.javaPrimitiveType)
-                    method.invoke(info, InputDevice.SOURCE_JOYSTICK)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error configurando motionEventSources vía reflexión", e)
-                }
-            }
-        }
-        this.serviceInfo = info
+        setCaptureActive(ScreenCaptureService.isCapturing)
     }
-    
+
+    /**
+     * Elige qué eventos de movimiento toma el servicio (onMotionEvent existe desde Android 14). El
+     * stick se toma siempre. El mouse solo durante la captura, para detectar que el VR BOX quedó en
+     * modo mouse: un servicio no puede observar el mouse sin consumirlo, así que fuera de la captura
+     * se lo deja pasar para no inutilizar un mouse real.
+     */
+    fun setCaptureActive(active: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        val info = serviceInfo ?: return
+        info.motionEventSources = if (active) {
+            InputDevice.SOURCE_JOYSTICK or InputDevice.SOURCE_MOUSE
+        } else {
+            InputDevice.SOURCE_JOYSTICK
+        }
+        serviceInfo = info
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         // No es necesario inspeccionar el contenido de las ventanas (UI Automator) para esta lógica de control remoto
     }
@@ -111,6 +116,10 @@ class JoystickAccessibilityService : AccessibilityService() {
                 event.getAxisValue(MotionEvent.AXIS_X),
                 event.getAxisValue(MotionEvent.AXIS_Y)
             )
+        } else if (event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+            event.device?.name?.startsWith(VR_BOX_DEVICE_PREFIX) == true
+        ) {
+            JoystickManager.reportMouseModeEvent()
         }
         super.onMotionEvent(event)
     }

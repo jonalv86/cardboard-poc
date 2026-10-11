@@ -3,7 +3,6 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- El Cardboard SDK declara estos permisos para escanear el QR del visor y detectarlo por
          NFC. Sin perfil de visor el SDK usa los parámetros de Cardboard V1, así que nada de eso

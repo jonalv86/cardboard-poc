@@ -122,6 +122,7 @@ class ScreenCaptureService : Service() {
 
         overlay = StereoOverlay(host).apply { show() }
         isCapturing = true
+        host.setCaptureActive(true)
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -273,7 +274,10 @@ class ScreenCaptureService : Service() {
         val window = overlay
         overlay = null
         window?.hide()
-        isCapturing = false
+        if (isCapturing) {
+            isCapturing = false
+            JoystickManager.accessibilityService?.setCaptureActive(false)
+        }
     }
 
     private fun imageToBitmap(image: Image): Bitmap {

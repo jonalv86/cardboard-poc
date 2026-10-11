@@ -1,8 +1,12 @@
 package com.pps.cardboardpoc
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.opengl.GLES20
 import android.opengl.GLUtils
+import android.os.SystemClock
 import android.util.Log
 import com.google.cardboard.sdk.CardboardView
 import com.google.cardboard.sdk.HeadTransform
@@ -31,8 +35,13 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
     private var positionHandle = 0
     private var texCoordHandle = 0
     private var scaleHandle = 0
+    private var offsetHandle = 0
     private var textureHandle = 0
     private var textureId = 0
+    private var noticeTextureId = 0
+
+    /** Si en este cuadro se dibuja el aviso de modo mouse; se decide una vez para los dos ojos. */
+    private var noticeVisible = false
 
     /** Dimensiones con las que está alocada la textura, para decidir entre texImage2D y texSubImage2D. */
     private var textureWidth = 0
@@ -76,7 +85,9 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
         scaleHandle = GLES20.glGetUniformLocation(program, "uScale")
+        offsetHandle = GLES20.glGetUniformLocation(program, "uOffset")
         textureHandle = GLES20.glGetUniformLocation(program, "uTexture")
+        noticeTextureId = createNoticeTexture()
 
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
@@ -106,32 +117,58 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         // Una sola subida por frame: onDrawEye corre dos veces sobre la misma textura.
         uploadPendingFrame()
         snapshotCursor()
+        val lastMouseEvent = JoystickManager.lastMouseModeEventMs
+        noticeVisible = lastMouseEvent != 0L &&
+            SystemClock.uptimeMillis() - lastMouseEvent < JoystickManager.MOUSE_MODE_NOTICE_MS
         logHeadOrientation(headTransform)
     }
 
     override fun onDrawEye(eye: CardboardView.Eye) {
         // El SDK ya limpió el framebuffer y dejó puesto el viewport de esta mitad. Limpiar de nuevo
         // acá borraría el ojo dibujado antes, porque glClear ignora el viewport.
-        if (program == 0 || textureWidth == 0) return
+        if (program == 0) return
 
         val viewportAspect = (surfaceWidth / 2f) / surfaceHeight
-        // La pantalla capturada es mucho más ancha que la mitad que le toca a cada ojo; sin esto
-        // la imagen sale estirada a lo alto.
-        val scaleX: Float
-        val scaleY: Float
-        if (frameAspect > viewportAspect) {
-            scaleX = 1f
-            scaleY = viewportAspect / frameAspect
-        } else {
-            scaleX = frameAspect / viewportAspect
-            scaleY = 1f
+        if (textureWidth != 0) {
+            // La pantalla capturada es mucho más ancha que la mitad que le toca a cada ojo; sin esto
+            // la imagen sale estirada a lo alto.
+            val scaleX: Float
+            val scaleY: Float
+            if (frameAspect > viewportAspect) {
+                scaleX = 1f
+                scaleY = viewportAspect / frameAspect
+            } else {
+                scaleX = frameAspect / viewportAspect
+                scaleY = 1f
+            }
+            drawTexturedQuad(textureId, scaleX, scaleY, 0f, 0f)
+            drawCursor(scaleX, scaleY)
         }
 
+        if (noticeVisible && noticeTextureId != 0) {
+            drawTexturedQuad(
+                noticeTextureId,
+                NOTICE_HALF_WIDTH,
+                NOTICE_HALF_WIDTH * viewportAspect / NOTICE_ASPECT,
+                0f,
+                NOTICE_CENTER_Y
+            )
+        }
+    }
+
+    private fun drawTexturedQuad(
+        texture: Int,
+        scaleX: Float,
+        scaleY: Float,
+        offsetX: Float,
+        offsetY: Float
+    ) {
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
         GLES20.glUniform1i(textureHandle, 0)
         GLES20.glUniform2f(scaleHandle, scaleX, scaleY)
+        GLES20.glUniform2f(offsetHandle, offsetX, offsetY)
 
         GLES20.glEnableVertexAttribArray(positionHandle)
         GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
@@ -142,8 +179,35 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
 
         GLES20.glDisableVertexAttribArray(positionHandle)
         GLES20.glDisableVertexAttribArray(texCoordHandle)
+    }
 
-        drawCursor(scaleX, scaleY)
+    /**
+     * Crea la textura con el aviso de modo mouse. Se dibuja con Canvas una sola vez: el texto es fijo
+     * y solo cambia si se muestra o no.
+     */
+    private fun createNoticeTexture(): Int {
+        val bitmap = Bitmap.createBitmap(
+            NOTICE_WIDTH_PX, (NOTICE_WIDTH_PX / NOTICE_ASPECT).toInt(), Bitmap.Config.ARGB_8888
+        )
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(NOTICE_BACKGROUND)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = bitmap.height * 0.32f
+            textAlign = Paint.Align.CENTER
+        }
+        val centerX = bitmap.width / 2f
+        canvas.drawText("Control en modo mouse", centerX, bitmap.height * 0.42f, paint)
+        canvas.drawText("Pasalo a modo joystick", centerX, bitmap.height * 0.82f, paint)
+
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        bitmap.recycle()
+        return ids[0]
     }
 
     /**
@@ -188,6 +252,10 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         if (textureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(textureId), 0)
             textureId = 0
+        }
+        if (noticeTextureId != 0) {
+            GLES20.glDeleteTextures(1, intArrayOf(noticeTextureId), 0)
+            noticeTextureId = 0
         }
         if (program != 0) {
             GLES20.glDeleteProgram(program)
@@ -300,10 +368,11 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
             attribute vec2 aPosition;
             attribute vec2 aTexCoord;
             uniform vec2 uScale;
+            uniform vec2 uOffset;
             varying vec2 vTexCoord;
             void main() {
                 vTexCoord = aTexCoord;
-                gl_Position = vec4(aPosition * uScale, 0.0, 1.0);
+                gl_Position = vec4(aPosition * uScale + uOffset, 0.0, 1.0);
             }
         """
 
@@ -315,6 +384,17 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
                 gl_FragColor = texture2D(uTexture, vTexCoord);
             }
         """
+
+        const val NOTICE_WIDTH_PX = 1024
+        const val NOTICE_ASPECT = 5f
+        const val NOTICE_BACKGROUND = 0xFFB71C1C.toInt()
+
+        /** Media anchura del aviso en coordenadas del ojo (1 = el ojo entero). */
+        const val NOTICE_HALF_WIDTH = 0.7f
+
+        // Por encima del centro, para no tapar el cursor y lejos de los bordes, donde la
+        // distorsión de la lente lo deforma más.
+        const val NOTICE_CENTER_Y = 0.4f
 
         /** Radio del cursor en píxeles de la pantalla capturada. */
         const val CURSOR_RADIUS_PX = 20f

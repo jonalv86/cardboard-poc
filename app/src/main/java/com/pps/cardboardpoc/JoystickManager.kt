@@ -5,6 +5,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Singleton encargado de gestionar el estado del cursor virtual compartido entre la captura de pantalla
@@ -79,9 +81,39 @@ object JoystickManager {
         }
     }
 
+    private val serviceConnectedState = MutableStateFlow(false)
+
+    /** Si el servicio de accesibilidad está conectado. Sin él no hay ventana estéreo ni control. */
+    val serviceConnected: StateFlow<Boolean> = serviceConnectedState
+
     // Referencia débil/estática al servicio activo para despachar inyecciones de eventos globales
     var accessibilityService: JoystickAccessibilityService? = null
-    
+        set(value) {
+            field = value
+            serviceConnectedState.value = value != null
+        }
+
+    /**
+     * Momento (uptime en ms) del último evento de mouse que mandó el VR BOX, o 0 si nunca mandó. En
+     * modo mouse el sistema dibuja su propio puntero, que no está en estéreo; el renderer lo usa para
+     * avisar que hay que pasar el control a modo joystick.
+     */
+    @Volatile
+    var lastMouseModeEventMs = 0L
+        private set
+
+    /** Registra que llegó un evento del control en modo mouse. */
+    fun reportMouseModeEvent() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastMouseModeEventMs > MOUSE_MODE_NOTICE_MS) {
+            Log.w(TAG, "El VR BOX está en modo mouse: el puntero del sistema no se ve en estéreo")
+        }
+        lastMouseModeEventMs = now
+    }
+
+    /** Cuánto tiempo sigue visible el aviso de modo mouse después del último evento. */
+    const val MOUSE_MODE_NOTICE_MS = 4000L
+
     /**
      * Ajusta los límites del cursor a la resolución de la captura. La primera vez lo centra; en los
      * cambios siguientes (una rotación, por ejemplo) conserva su posición relativa en la pantalla.
