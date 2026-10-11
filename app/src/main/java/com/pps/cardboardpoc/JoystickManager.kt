@@ -172,12 +172,17 @@ object JoystickManager {
     }
     
     /**
-     * Solicita al servicio de accesibilidad que inyecte un evento táctil síncrono (tap)
-     * en la ubicación exacta donde se encuentra el cursor virtual en este momento.
+     * Apoya un dedo simulado donde está el cursor. El dedo lo sigue hasta [releasePress], así que
+     * sirve tanto para un tap como para un arrastre.
      */
-    fun performClick() {
-        Log.d(TAG, "Simulando Click en: ($cursorX, $cursorY)")
-        accessibilityService?.clickAt(cursorX, cursorY)
+    fun pressDown() {
+        Log.d(TAG, "Apoyando dedo en: ($cursorX, $cursorY)")
+        accessibilityService?.pressAt(cursorX, cursorY)
+    }
+
+    /** Levanta el dedo apoyado con [pressDown], en la posición actual del cursor. */
+    fun releasePress() {
+        accessibilityService?.releasePress()
     }
     
     /**
