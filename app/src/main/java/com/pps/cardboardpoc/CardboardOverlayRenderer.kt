@@ -16,7 +16,8 @@ import javax.microedition.khronos.egl.EGLConfig
 
 /**
  * Dibuja el frame capturado como un quad texturado, una vez por ojo, dentro del framebuffer lado a
- * lado que arma el Cardboard SDK.
+ * lado que arma el Cardboard SDK, y encima el cursor del control. El cursor se dibuja en cada cuadro,
+ * así que se mueve aunque la pantalla capturada no cambie.
  *
  * La corrección de barril no se aplica acá: el SDK la aplica después sobre ese framebuffer, con la
  * malla de distorsión que calcula para cada lente.
@@ -37,6 +38,18 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
     private var textureWidth = 0
     private var textureHeight = 0
 
+    private var cursorProgram = 0
+    private var cursorPositionHandle = 0
+    private var cursorCenterHandle = 0
+    private var cursorHalfSizeHandle = 0
+
+    /**
+     * Posición del cursor como fracción de la pantalla (0..1), tomada una vez por cuadro para que los
+     * dos ojos lo dibujen en el mismo lugar. Negativa si todavía no hay tamaño de pantalla.
+     */
+    private var cursorFractionX = -1f
+    private var cursorFractionY = -1f
+
     private var frameAspect = 1f
     private var surfaceWidth = 0
     private var surfaceHeight = 0
@@ -52,7 +65,12 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
     }
 
     override fun onSurfaceCreated(config: EGLConfig?) {
-        program = buildProgram()
+        cursorProgram = buildProgram(CURSOR_VERTEX_SHADER, CURSOR_FRAGMENT_SHADER)
+        cursorPositionHandle = GLES20.glGetAttribLocation(cursorProgram, "aPosition")
+        cursorCenterHandle = GLES20.glGetUniformLocation(cursorProgram, "uCenter")
+        cursorHalfSizeHandle = GLES20.glGetUniformLocation(cursorProgram, "uHalfSize")
+
+        program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         if (program == 0) return
 
         positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
@@ -87,6 +105,7 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
     override fun onNewFrame(headTransform: HeadTransform) {
         // Una sola subida por frame: onDrawEye corre dos veces sobre la misma textura.
         uploadPendingFrame()
+        snapshotCursor()
         logHeadOrientation(headTransform)
     }
 
@@ -123,6 +142,44 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
 
         GLES20.glDisableVertexAttribArray(positionHandle)
         GLES20.glDisableVertexAttribArray(texCoordHandle)
+
+        drawCursor(scaleX, scaleY)
+    }
+
+    /**
+     * Dibuja el cursor encima del frame, en el mismo sistema de coordenadas que el quad: así queda
+     * sobre el mismo píxel de la pantalla capturada que va a recibir el click.
+     */
+    private fun drawCursor(scaleX: Float, scaleY: Float) {
+        if (cursorProgram == 0 || cursorFractionX < 0f) return
+
+        val centerX = (cursorFractionX * 2f - 1f) * scaleX
+        val centerY = (1f - cursorFractionY * 2f) * scaleY
+
+        GLES20.glUseProgram(cursorProgram)
+        GLES20.glUniform2f(cursorCenterHandle, centerX, centerY)
+        // El radio se expresa en píxeles del frame, así que con la misma escala del quad el cursor
+        // queda circular aunque el frame y la mitad de cada ojo tengan proporciones distintas.
+        GLES20.glUniform2f(
+            cursorHalfSizeHandle,
+            CURSOR_RADIUS_PX / textureWidth * 2f * scaleX,
+            CURSOR_RADIUS_PX / textureHeight * 2f * scaleY
+        )
+        GLES20.glEnableVertexAttribArray(cursorPositionHandle)
+        GLES20.glVertexAttribPointer(cursorPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(cursorPositionHandle)
+    }
+
+    private fun snapshotCursor() {
+        val width = JoystickManager.screenWidth
+        val height = JoystickManager.screenHeight
+        if (width == 0 || height == 0) {
+            cursorFractionX = -1f
+            return
+        }
+        cursorFractionX = (JoystickManager.cursorX / width).coerceIn(0f, 1f)
+        cursorFractionY = (JoystickManager.cursorY / height).coerceIn(0f, 1f)
     }
 
     override fun onFinishFrame(viewport: Viewport?) = Unit
@@ -135,6 +192,10 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         if (program != 0) {
             GLES20.glDeleteProgram(program)
             program = 0
+        }
+        if (cursorProgram != 0) {
+            GLES20.glDeleteProgram(cursorProgram)
+            cursorProgram = 0
         }
         textureWidth = 0
         textureHeight = 0
@@ -176,9 +237,9 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         )
     }
 
-    private fun buildProgram(): Int {
-        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
-        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
+    private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
+        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource)
+        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource)
         if (vertexShader == 0 || fragmentShader == 0) return 0
 
         val id = GLES20.glCreateProgram()
@@ -252,6 +313,31 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
             varying vec2 vTexCoord;
             void main() {
                 gl_FragColor = texture2D(uTexture, vTexCoord);
+            }
+        """
+
+        /** Radio del cursor en píxeles de la pantalla capturada. */
+        const val CURSOR_RADIUS_PX = 20f
+
+        const val CURSOR_VERTEX_SHADER = """
+            attribute vec2 aPosition;
+            uniform vec2 uCenter;
+            uniform vec2 uHalfSize;
+            varying vec2 vLocal;
+            void main() {
+                vLocal = aPosition;
+                gl_Position = vec4(uCenter + aPosition * uHalfSize, 0.0, 1.0);
+            }
+        """
+
+        // Disco rojo con centro blanco: se distingue sobre fondos claros y oscuros.
+        const val CURSOR_FRAGMENT_SHADER = """
+            precision mediump float;
+            varying vec2 vLocal;
+            void main() {
+                float d = length(vLocal);
+                if (d > 1.0) discard;
+                gl_FragColor = d < 0.4 ? vec4(1.0) : vec4(1.0, 0.0, 0.0, 1.0);
             }
         """
     }

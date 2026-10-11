@@ -10,9 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -172,22 +170,7 @@ class ScreenCaptureService : Service() {
                 }
             }
             logFrameContent(bitmap)
-
-            // Dibujar el cursor virtual en el bitmap antes de pasarlo al overlay estéreo
-            val mutableBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(mutableBitmap)
-            val paint = Paint().apply {
-                color = Color.RED
-                style = Paint.Style.FILL
-                isAntiAlias = true
-            }
-            // Dibujar un círculo exterior rojo
-            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 20f, paint)
-            // Dibujar un punto central blanco para mayor contraste
-            paint.color = Color.WHITE
-            canvas.drawCircle(JoystickManager.cursorX, JoystickManager.cursorY, 8f, paint)
-
-            mainHandler.post { overlay?.updateFrame(mutableBitmap) }
+            mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
 
         val screen = currentDisplayMetrics()

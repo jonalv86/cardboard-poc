@@ -10,15 +10,26 @@ import android.util.Log
 object JoystickManager {
     private const val TAG = "JoystickManager"
     
-    // Coordenadas actuales del cursor en píxeles. Se inician con valores por defecto
-    // hasta recibir el tamaño real del stream de vídeo.
-    var cursorX = 540f
-    var cursorY = 960f
-    
-    // Dimensiones lógicas del frame/pantalla del dispositivo para acotar el movimiento
-    var screenWidth = 1080
-    var screenHeight = 1920
-    
+    /** Posición horizontal del cursor, en píxeles de pantalla. La lee el hilo de render en cada cuadro. */
+    @Volatile
+    var cursorX = 0f
+        private set
+
+    /** Posición vertical del cursor, en píxeles de pantalla. La lee el hilo de render en cada cuadro. */
+    @Volatile
+    var cursorY = 0f
+        private set
+
+    /** Ancho de la pantalla capturada en píxeles; 0 hasta que arranca la primera captura. */
+    @Volatile
+    var screenWidth = 0
+        private set
+
+    /** Alto de la pantalla capturada en píxeles; 0 hasta que arranca la primera captura. */
+    @Volatile
+    var screenHeight = 0
+        private set
+
     // Cantidad de píxeles que se desplaza el cursor por cada interrupción o evento del D-pad
     var moveStep = 30f
     
@@ -32,20 +43,21 @@ object JoystickManager {
     var accessibilityService: JoystickAccessibilityService? = null
     
     /**
-     * Ajusta los límites máximos del cursor según la resolución nativa detectada en la proyección.
-     * Si es la primera ejecución, sitúa el cursor en el centro exacto del área visible.
+     * Ajusta los límites del cursor a la resolución de la captura. La primera vez lo centra; en los
+     * cambios siguientes (una rotación, por ejemplo) conserva su posición relativa en la pantalla.
      */
     fun setScreenSize(width: Int, height: Int) {
-        if (width > 0 && height > 0) {
-            screenWidth = width
-            screenHeight = height
-            // Centrar el cursor al inicio si mantiene los valores por defecto heredados
-            if (cursorX == 540f && cursorY == 960f) {
-                cursorX = width / 2f
-                cursorY = height / 2f
-            }
-            Log.d(TAG, "Tamaño de pantalla actualizado en JoystickManager: ${width}x${height}")
+        if (width <= 0 || height <= 0) return
+        if (screenWidth == 0 || screenHeight == 0) {
+            cursorX = width / 2f
+            cursorY = height / 2f
+        } else {
+            cursorX = cursorX * width / screenWidth
+            cursorY = cursorY * height / screenHeight
         }
+        screenWidth = width
+        screenHeight = height
+        Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
     }
     
     /** Reducen o aumentan los ejes acotando la posición entre 0 y el ancho/alto máximo de la pantalla */
