@@ -80,10 +80,9 @@ class JoystickAccessibilityService : AccessibilityService() {
         val isPress = event.action == KeyEvent.ACTION_DOWN
         val isFirstPress = isPress && event.repeatCount == 0
         when (event.keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> if (isPress) JoystickManager.moveUp()
-            KeyEvent.KEYCODE_DPAD_DOWN -> if (isPress) JoystickManager.moveDown()
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (isPress) JoystickManager.moveLeft()
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (isPress) JoystickManager.moveRight()
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT ->
+                if (event.repeatCount == 0) JoystickManager.setDpad(event.keyCode, isPress)
 
             KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER ->
                 if (isFirstPress) JoystickManager.performClick()
@@ -102,14 +101,16 @@ class JoystickAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Captura eventos de movimiento analógicos continuos de joysticks vinculados globales.
-     * Disponible a partir de Android 12 (API 31+).
+     * Captura los eventos del stick. Un stick digital como el del VR BOX solo manda un evento cuando
+     * cambia de posición, así que se registra la inclinación y JoystickManager mueve el cursor
+     * mientras dure.
      */
     override fun onMotionEvent(event: MotionEvent) {
         if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)) {
-            val axisX = event.getAxisValue(MotionEvent.AXIS_X)
-            val axisY = event.getAxisValue(MotionEvent.AXIS_Y)
-            JoystickManager.moveAnalog(axisX, axisY)
+            JoystickManager.setStick(
+                event.getAxisValue(MotionEvent.AXIS_X),
+                event.getAxisValue(MotionEvent.AXIS_Y)
+            )
         }
         super.onMotionEvent(event)
     }
