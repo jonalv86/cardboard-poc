@@ -17,6 +17,7 @@
 /.idea/kotlinc.xml
 /.idea/migrations.xml
 /.idea/deploymentTargetSelector.xml
+/.idea/runConfigurations.xml
 
 .DS_Store
 /build
