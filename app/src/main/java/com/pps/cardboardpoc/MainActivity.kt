@@ -83,8 +83,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Android 14+ exige un foreground service activo antes de pedir MediaProjection
-        ContextCompat.startForegroundService(this, Intent(this, ScreenCaptureService::class.java))
         screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
     }
 
