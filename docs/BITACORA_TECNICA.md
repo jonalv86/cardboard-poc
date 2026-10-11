@@ -10,6 +10,7 @@
 - [Fase 1 — Prueba de concepto de captura de pantalla](#fase-1)
 - [Fase 1.5 — Ventana overlay](#fase-15)
 - [Fase 2 — Integración con Cardboard SDK](#fase-2)
+- [Fase 3 — Interacción con el control Bluetooth](#fase-3)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -166,6 +167,9 @@ plano; necesita ser una ventana que se mantenga visible por encima de cualquier 
      accesibilidad individuales — un solo nodo "pantalla completa" en vez de un nodo por
      botón. En esos casos `performAction` no tiene qué apuntar. Pendiente probar con 2-3
      apps candidatas al demo antes de comprometerse a una sola estrategia de interacción.
+   - **Revisado en la Fase 3:** la prueba con apps reales dio vuelta esta conclusión. `performAction`
+     falla en silencio en Chrome, y el bucle de `dispatchGesture` se evita con otro tipo de ventana.
+     La estrategia final es solo `dispatchGesture`; el detalle está en la Fase 3.
 
 **Resultado:** funcional. Overlay opaco, correctamente dimensionado en landscape, con
 hallazgos de `FLAG_SECURE` y de estrategia de interacción documentados.
@@ -429,6 +433,8 @@ y dar pantalla negra. Lo probamos en el celular y anda bien tal como está.
    rotación no es el único disparador — también salta con cambios de resolución o de tasa de
    refresco.
 
+   **Resuelto en la Fase 3.**
+
 3. **No se pueden sacar capturas de pantalla de nuestra propia app.**
 
    El mecanismo que usamos para que el overlay no se capture a sí mismo (y no se produzca el
@@ -444,6 +450,13 @@ y dar pantalla negra. Lo probamos en el celular y anda bien tal como está.
    Vale una observación: en el modo "una sola app" —el que usamos en la práctica— esa protección
    probablemente sea innecesaria, porque se espeja únicamente la app elegida y el overlay no forma
    parte de eso. No lo comprobamos.
+
+   **Corrección de la Fase 3:** la primera frase de este punto está mal. En el celular de prueba
+   (Android 16) la protección **no excluye** la ventana de la grabación: la pinta de **negro**. Con
+   "pantalla completa" la vista estéreo se ve entera en negro, y lo comprobamos con los dos tipos de
+   ventana que usamos. O sea, el modo pantalla completa nunca funcionó en este equipo; el que
+   funciona es "una sola app", donde el overlay no forma parte de lo capturado. Lo que sí hace la
+   protección es evitar el efecto de imagen dentro de imagen, así que se mantiene.
 
 **Plan detallado:** se elaboró un plan técnico previo a la implementación, cubriendo la
 compilación del SDK nativo y la checklist de primera prueba en el visor físico. Está
@@ -464,6 +477,149 @@ limitaciones conocidas de arriba están todas diferidas a etapas posteriores, co
 acordado.
 
 **Equipo de prueba:** Samsung con Android 16, visor VR BOX genérico.
+
+---
+
+<a id="fase-3"></a>
+## Fase 3 — Interacción con el control Bluetooth
+
+**Objetivo:** manejar la app capturada desde adentro del visor, con el control Bluetooth que trae el
+VR BOX: un cursor que se mueve con el stick y un botón que hace "tocar" donde está el cursor.
+
+**Punto de partida.** Un compañero había sumado en otra rama un servicio de accesibilidad que recibe
+las teclas y el stick del control y simula toques con `dispatchGesture`, más un objeto que guarda la
+posición del cursor. Al probarlo en el celular aparecieron varios problemas, y el más grave era que el
+toque **nunca llegaba** a la app de abajo. El log decía "gesto completado", pero eso solo significa que
+Android inyectó el toque, no que alguien lo haya recibido. Lo recibía nuestra propia ventana estéreo,
+que es opaca y está arriba de todo: exactamente el bucle que habíamos anticipado en la Fase 1.5.
+
+**Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16), visor y control VR BOX.
+
+### Primero una prueba corta, y lo que dio vuelta
+
+Antes de escribir la versión definitiva hicimos una prueba mínima contra tres apps candidatas al demo
+(Ajustes, Chrome y Clash of Clans), con los dos caminos de click: actuar sobre el elemento accesible
+que está debajo del cursor (`performAction`, el camino que la bitácora daba como principal) y simular
+el toque (`dispatchGesture`).
+
+| App | Actuar sobre el elemento | Simular el toque |
+|---|---|---|
+| Ajustes | Funciona | Funciona |
+| Chrome (botón de una página web) | **Dice que funcionó y no pasa nada** | Funciona |
+| Clash of Clans | No hay elementos: el juego es una sola superficie | Funciona (abre el menú del juego) |
+
+El resultado de Chrome es el que decidió todo. No es que el camino falle: **falla en silencio**, porque
+le responde "listo" al servicio y el botón de la página no se entera. Con eso no hay plan B posible,
+porque nunca nos enteramos de que hace falta usarlo. Por eso quedó **un solo camino: simular el toque**.
+Tiene una ventaja extra: toca exactamente el punto donde está el cursor, como haría un dedo.
+
+Para Chrome lo probamos con una página propia, servida desde la PC, con un botón que cambia su texto
+al recibir el click. Así hay una prueba objetiva de que el click llegó, en lugar de confiar en la
+respuesta del sistema.
+
+### La decisión más importante: de quién es la ventana estéreo
+
+Para que el toque simulado atraviese la vista estéreo, esa ventana tiene que dejar pasar los toques.
+Pero Android 12 en adelante **descarta** los toques que atraviesan una ventana flotante opaca de una
+app común: es una defensa contra apps que ponen una pantalla falsa encima de otra para robar toques.
+Por eso en la Fase 1.5 habíamos encontrado que opacidad total y "dejar pasar los toques" eran
+incompatibles.
+
+La salida fue cambiar de dueño a la ventana. Una ventana creada **por el servicio de accesibilidad**,
+con el tipo especial que Android reserva para esos servicios, cuenta como ventana **de confianza**, y
+esa defensa no se le aplica. Puede ser opaca y a la vez no recibir toques. Lo verificamos en el celular
+con las herramientas de diagnóstico del sistema: la ventana figura como "no táctil" y "de confianza", y
+el toque llega a la app de abajo.
+
+Consecuencias de esta decisión:
+
+- **Sin el servicio de accesibilidad no hay vista estéreo.** La app ya no arranca la captura si el
+  servicio no está activo, y si el usuario lo desactiva con la captura andando, la captura se detiene.
+- **Ya no hace falta el permiso "Mostrar sobre otras apps"**, que se quitó. Lo reemplaza el servicio
+  de accesibilidad, que el usuario activa a mano en Ajustes.
+- El Cardboard SDK funciona igual en este tipo de ventana, y se conserva la protección contra el
+  efecto de imagen dentro de imagen.
+
+### El resto de los arreglos
+
+1. **El gatillo salía de la app.** Relevamos los botones apretando cada uno y leyendo los eventos
+   crudos del sistema: el gatillo llega como `BUTTON_L1` y el botón "A" como `BUTTON_B`. El mapeo
+   final es **gatillo = tocar** y **A = atrás**. Los otros dos botones del control (`BUTTON_A` y `R1`)
+   quedaron sin asignar.
+
+   Un detalle que causaba parte del problema: se procesaba la tecla al apretarla, pero el evento de
+   **soltarla** le llegaba crudo a la app de abajo, y muchas apps toman `BUTTON_B` como "atrás". Ahora
+   el servicio se queda con las dos mitades de cada tecla del control.
+
+   *Por qué hay que asignar los botones y no "funcionan solos":* Android sí les da un significado por
+   defecto (A confirma, B vuelve), pero sobre el elemento que tiene el foco en la app, no sobre un
+   punto de la pantalla. Nuestro cursor solo existe en la vista estéreo, así que alguien tiene que
+   traducir "gatillo" a "tocar en este punto".
+
+2. **El stick no repetía.** El stick del VR BOX es digital: manda un evento solo cuando cambia de
+   posición, no mientras se lo mantiene inclinado. Ahora se guarda la dirección vigente y el cursor se
+   mueve solo mientras no vuelva al centro. Arranca lento (400 píxeles por segundo, para apuntar fino)
+   y acelera hasta 1600 en un segundo, para cruzar la pantalla rápido.
+
+3. **El cursor estaba pintado sobre la imagen capturada.** Eso tenía dos problemas: si la pantalla de
+   abajo no cambiaba, no llegaban imágenes nuevas y el cursor se quedaba congelado; y obligaba a copiar
+   la imagen entera en cada cuadro solo para pintarle un círculo. Ahora lo dibuja el renderizador
+   directamente, en los dos ojos y en cada cuadro (60 por segundo), con el mismo cálculo de proporción
+   que la imagen, así queda sobre el mismo punto que va a recibir el toque.
+
+4. **Al rotar, el cursor quedaba fuera de la pantalla.** Ahora conserva su posición relativa: si
+   estaba en el borde derecho en horizontal, queda en el borde derecho en vertical.
+
+5. **En modo mouse el control dibuja un puntero que no está en estéreo.** El VR BOX tiene varios
+   modos, y en el de mouse el sistema dibuja su propia flecha, que se ve una sola vez y no en cada
+   ojo. El modo soportado es el de joystick. Durante la captura, el servicio detecta eventos de mouse
+   del VR BOX y muestra un cartel rojo en los dos ojos pidiendo cambiar de modo. Para eso el servicio
+   tiene que **quedarse** con los eventos de mouse mientras dura la captura: Android 16 no deja a una
+   app común solo observarlos (la función existe, pero está oculta). Fuera de la captura el mouse queda
+   libre, para no inutilizar un mouse real.
+
+6. **No había guía para activar el servicio.** La pantalla de inicio ahora distingue tres casos (el
+   servicio apagado; activado pero sin correr, que puede pasar después de reinstalar la app; y listo).
+   Si falta, el botón Iniciar lleva a Ajustes de accesibilidad y, al volver con el servicio activo,
+   sigue solo con el pedido de captura. No se puede abrir directamente la pantalla de nuestro servicio:
+   esa pantalla exige un permiso de sistema, y al intentarlo la app se cerraba.
+
+7. **La X del visor.** La ventana estéreo ya no recibe toques en ningún lado, así que la X del SDK
+   para detener la captura había dejado de responder. Android no ofrece una forma pública de hacer
+   táctil solo una parte de una ventana. Se resolvió poniendo encima de la X una segunda ventana
+   transparente, del tamaño exacto del botón, que sí recibe toques. Es para el dedo, con el celular
+   fuera del visor: el cursor no llega, porque la X está en la esquina de la pantalla física y fuera de
+   la imagen de cada ojo.
+
+8. **Dos cierres que venían de antes:**
+   - *Al tocar Iniciar en Android 14+:* el servicio de captura se declaraba "de grabación de pantalla"
+     antes de que el usuario aceptara el diálogo, y el sistema lo rechazaba. Ahora se declara recién
+     cuando llega la aceptación.
+   - *Al rotar o detener la captura:* es la limitación 2 de la Fase 2. El hilo que copia la imagen y el
+     que cierra el lector ahora se turnan, y se descartan las imágenes de un lector ya reemplazado. Se
+     probó con diez rotaciones seguidas sin cierres. Como la falla original era intermitente, la
+     garantía viene más del diseño que de la prueba.
+
+### Limitaciones conocidas al cierre de la Fase 3
+
+1. **Solo funciona el modo "una sola app".** Con "pantalla completa" la vista estéreo sale en negro
+   (ver la corrección en la limitación 3 de la Fase 2). La pantalla de inicio se lo indica al usuario.
+2. **Durante la captura un mouse real no funciona**, por lo explicado en el punto 5.
+3. **Sigue la limitación 1 de la Fase 2:** si la app capturada gira a vertical, la vista estéreo gira
+   con ella.
+4. **El cursor no llega a la X del visor**; la X se toca con el dedo.
+5. **En modo "una sola app", si el sistema muestra la app con bandas negras**, el cursor (que está en
+   coordenadas de la pantalla física) puede no coincidir exactamente con lo que se ve. No lo vimos con
+   las apps probadas.
+6. **Mientras haya captura, los botones del control solo sirven para nuestra app**: el servicio se
+   queda con todas las teclas que reconoce. Fuera de la captura también las intercepta; si en algún
+   momento se quiere usar el control con un juego normal, hay que apagar el servicio.
+7. **Después de reinstalar la app, a veces el servicio queda "caído"** y hay que apagarlo y prenderlo
+   en Ajustes. La pantalla de inicio lo detecta y lo indica.
+
+**Resultado: fase cerrada.** Con el control en modo joystick se mueve un cursor estéreo, el gatillo
+toca sobre la app capturada y A vuelve atrás. Verificado en el celular con Ajustes, Chrome y Clash of
+Clans.
 
 ---
 
@@ -528,6 +684,31 @@ segundo tipo, y si uno filtra el log solo por el nombre de la app, no aparecen.
 `adb logcat -c` antes de reproducir un problema. Con un buffer de 300.000 líneas acumuladas,
 encontrar el evento correcto es más difícil que el problema en sí.
 
+**7. Desconfiar de las herramientas cuando tocan lo mismo que se está probando.** *(Fase 3)*
+
+Dos herramientas muy usadas nos dieron resultados falsos, y conviene tenerlas presentes:
+
+- `uiautomator dump`, que sirve para ver qué hay en pantalla, **suspende los servicios de
+  accesibilidad** mientras corre. Como nuestra ventana estéreo pertenece a ese servicio, desaparecía
+  sin que lo notáramos, y varias pruebas de la primera tanda se hicieron sin la ventana. Tuvimos que
+  repetirlas. Para inspeccionar durante una prueba usamos `dumpsys window`, `dumpsys input` y
+  `dumpsys activity`, que solo leen.
+- `adb shell input keyevent` no pasa por el filtro de teclas del servicio: la tecla le llega directo a
+  la app. Para probar el control hace falta el control de verdad.
+
+**8. Relevar el hardware preguntando qué se apretó.** *(Fase 3)*
+
+El primer relevamiento de los botones del VR BOX tenía el gatillo mal identificado, y eso nos llevó a
+un mapeo equivocado. Lo que sirvió fue grabar los eventos crudos (`adb shell getevent -lt`) mientras
+una persona apretaba **un botón conocido por vez**, tres veces cada uno. Sin esa correspondencia, los
+códigos no dicen qué botón físico es cuál.
+
+**9. Pedirle a la prueba una evidencia que no dependa de lo que se prueba.** *(Fase 3)*
+
+Que el sistema responda "click hecho" no prueba que el click haya llegado; lo vimos con Chrome. La
+evidencia útil es un efecto visible del otro lado: una pantalla nueva en `dumpsys activity`, el texto
+de un botón que cambia, o la reacción del juego.
+
 ---
 
 <a id="convenciones"></a>
@@ -545,22 +726,26 @@ encontrar el evento correcto es más difícil que el problema en sí.
 <a id="proximos-pasos"></a>
 ## Próximos pasos
 
+**Hecho:**
+
+- [x] **Fase 3 — interacción con el control.** Cursor estéreo con el stick, gatillo = tocar, A =
+      atrás. La estrategia final fue `dispatchGesture` con la ventana estéreo como overlay de
+      accesibilidad; `performAction` se descartó.
+- [x] Validar la interacción contra apps candidatas al demo (Ajustes, Chrome, Clash of Clans).
+- [x] `app/libs/sdk-debug.aar` ya está versionado.
+- [x] Blindar la carrera que podía cerrar la captura al rotar (limitación 2 de la Fase 2).
+
 **Lo que sigue ahora:**
 
-- [ ] **Fase 3 — tomar los toques.** Interacción por mirada o botón, con
-      `AccessibilityNodeInfo.performAction` como estrategia principal (plan B: `dispatchGesture`
-      más un toggle de `FLAG_NOT_TOUCHABLE`, para apps que no expongan nodos de accesibilidad
-      individuales).
-- [ ] Validar `performAction` contra 2 o 3 apps candidatas al demo antes de fijar la estrategia
-      de interacción definitiva.
-- [ ] Commitear `app/libs/sdk-debug.aar`, que hoy figura como no versionado, para que el resto
-      del equipo pueda compilar sin instalar NDK ni CMake.
+- [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`). Candidatos:
+      scroll o volver al inicio.
+- [ ] Que el servicio deje pasar las teclas del control cuando no hay captura, así el control se
+      puede usar normalmente fuera del visor (limitación 6 de la Fase 3).
 
 **Diferido, con el criterio ya acordado:**
 
 - [ ] **Apps verticales:** mostrarlas corrigiendo el tamaño —aunque se vean más chicas— y volver
       a corregir cuando se elija pantalla completa.
-- [ ] Blindar la carrera que puede cerrar la captura al rotar (limitación 2 de la Fase 2).
 - [ ] Afinar la óptica. Primero lo barato: ajustar con una regla las dos ruedas del VR BOX a lo
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.
