@@ -101,6 +101,13 @@ class ScreenCaptureService : Service() {
     private fun startCapture(resultCode: Int, resultData: Intent) {
         if (mediaProjection != null) return
 
+        val host = JoystickManager.accessibilityService
+        if (host == null) {
+            Log.w(TAG, "servicio de accesibilidad inactivo: sin él no hay ventana estéreo")
+            stopSelf()
+            return
+        }
+
         val projectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = projectionManager.getMediaProjection(resultCode, resultData) ?: return
@@ -115,7 +122,8 @@ class ScreenCaptureService : Service() {
             }
         }, mainHandler)
 
-        overlay = StereoOverlay(this).apply { show() }
+        overlay = StereoOverlay(host).apply { show() }
+        isCapturing = true
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -282,6 +290,7 @@ class ScreenCaptureService : Service() {
         val window = overlay
         overlay = null
         window?.hide()
+        isCapturing = false
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -340,6 +349,10 @@ class ScreenCaptureService : Service() {
         private const val ACTION_STOP = "com.pps.cardboardpoc.action.STOP_CAPTURE"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
+
+        /** Si hay una captura en curso, con su ventana estéreo. Solo se escribe desde el main thread. */
+        var isCapturing = false
+            private set
 
         /** Intent que arranca la captura con el token devuelto por el diálogo de MediaProjection. */
         fun startIntent(context: Context, resultCode: Int, resultData: Intent): Intent =

@@ -20,6 +20,7 @@ class JoystickAccessibilityService : AccessibilityService() {
     
     companion object {
         private const val TAG = "JoystickAccService"
+        private const val CAPTURE_TAG = "CardboardCapture"
     }
     
     /**
@@ -53,61 +54,51 @@ class JoystickAccessibilityService : AccessibilityService() {
         // No es necesario inspeccionar el contenido de las ventanas (UI Automator) para esta lógica de control remoto
     }
     
-    /**
-     * Limpia las referencias si el servicio es interrumpido por el sistema o desactivado por el usuario.
-     */
     override fun onInterrupt() {
         Log.d(TAG, "Servicio de Accesibilidad Interrumpido")
-        JoystickManager.accessibilityService = null
     }
-    
+
+    /**
+     * Limpia la referencia al desactivarse el servicio y detiene la captura, cuya ventana estéreo
+     * pertenece a este servicio y desaparece con él.
+     */
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Servicio de Accesibilidad Destruido")
         JoystickManager.accessibilityService = null
+        if (ScreenCaptureService.isCapturing) {
+            startService(ScreenCaptureService.stopIntent(this))
+        }
     }
-    
+
     /**
      * Punto de entrada crítico para la captura de eventos de botones físicos y joysticks.
      * Mapea códigos de tecla estándar de Android (KeyEvent) a las funciones lógicas del cursor.
+     * En modo joystick el VR BOX manda el gatillo como BUTTON_L1 y el botón A como BUTTON_B.
      */
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Procesamos solo la pulsación inicial para evitar repeticiones accidentales o rebotes
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                // Navegación direccional (D-Pad o Stick analógico configurado como digital)
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    JoystickManager.moveUp()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    JoystickManager.moveDown()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    JoystickManager.moveLeft()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    JoystickManager.moveRight()
-                    return true
-                }
-                
-                // Confirmación / Acción primaria (Botón A, gatillos o centro del D-Pad)
-                KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    JoystickManager.performClick()
-                    return true
-                }
-                
-                // Navegación hacia atrás (Botón B o botón físico Back)
-                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_BUTTON_B -> {
-                    JoystickManager.performBack()
-                    return true
-                }
-            }
+        val isPress = event.action == KeyEvent.ACTION_DOWN
+        val isFirstPress = isPress && event.repeatCount == 0
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> if (isPress) JoystickManager.moveUp()
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (isPress) JoystickManager.moveDown()
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (isPress) JoystickManager.moveLeft()
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (isPress) JoystickManager.moveRight()
+
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER ->
+                if (isFirstPress) JoystickManager.performClick()
+
+            KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK ->
+                if (isFirstPress) JoystickManager.performBack()
+
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_R1 ->
+                if (isFirstPress) Log.d(TAG, "${KeyEvent.keyCodeToString(event.keyCode)} sin asignar")
+
+            else -> return super.onKeyEvent(event)
         }
-        // Devuelve false (o llama a super) para permitir que el sistema procese teclas no manejadas
-        return super.onKeyEvent(event)
+        // Toda tecla del control se consume, ACTION_UP incluido: si le llegara cruda a la app de
+        // abajo, esta la interpretaría sobre su vista con foco (BUTTON_B es Atrás para muchas apps).
+        return true
     }
 
     /**
@@ -126,6 +117,7 @@ class JoystickAccessibilityService : AccessibilityService() {
     /**
      * Simula un toque físico ("tap") programáticamente en las coordenadas proporcionadas.
      * Utiliza la API de gestos de Accesibilidad para interactuar con otras aplicaciones en primer plano.
+     * El toque atraviesa la ventana estéreo, que no recibe toques, y llega a la app capturada.
      */
     fun clickAt(x: Float, y: Float) {
         // Crea una trayectoria de un solo punto
@@ -142,11 +134,11 @@ class JoystickAccessibilityService : AccessibilityService() {
         dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 super.onCompleted(gestureDescription)
-                Log.d(TAG, "Gesto de click completado exitosamente en ($x, $y)")
+                Log.d(CAPTURE_TAG, "click completado en ($x, $y)")
             }
             override fun onCancelled(gestureDescription: GestureDescription?) {
                 super.onCancelled(gestureDescription)
-                Log.d(TAG, "Gesto de click cancelado (posible conflicto con otro gesto o overlay)")
+                Log.w(CAPTURE_TAG, "click cancelado en ($x, $y)")
             }
         }, null)
     }
