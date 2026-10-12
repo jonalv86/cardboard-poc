@@ -689,14 +689,14 @@ físico manda `BTN_NORTH`, que Android traduce como `KEYCODE_BUTTON_X`. Ojo con 
 que Android llama `BUTTON_B` es el botón **A** físico (atrás), no el B. Como la app no tenía mapeado
 `BUTTON_X`, al principio el botón no dejaba ningún rastro en el log.
 
-### Prueba de integración con el arrastre y el avance por borde
+### Integración con el arrastre y el avance por borde
 
 El arrastre con el control y el avance automático por borde se hicieron en otra rama
-(`jona/feature/arrastre-control`). Antes del commit probamos las dos cosas juntas en una rama
-temporal, y anduvo todo: tocar, mantener apretado y arrastrar con la cabeza y con el joystick, el avance
-por borde mirando más allá de un borde, y el centrado con B.
+(`jona/feature/arrastre-control`), que entró a `master` mientras E2-6 estaba abierta. Antes del commit
+probamos las dos cosas juntas en una rama temporal, y anduvo todo: tocar, mantener apretado y arrastrar
+con la cabeza y con el joystick, el avance por borde mirando más allá de un borde, y el centrado con B.
 
-Al juntarlas hubo que resolver tres cosas, que van a volver a aparecer cuando se mergeen las ramas:
+Al juntarlas hubo que resolver estas cosas:
 
 1. El joystick de la otra rama mueve el puntero con `moveCursorTo`; acá lo hace con `moveBase`. Queda
    `moveBase`, seguido del chequeo de borde.
@@ -704,9 +704,14 @@ Al juntarlas hubo que resolver tres cosas, que van a volver a aparecer cuando se
    del joystick para que la suma dé la posición pedida.
 3. El chequeo de borde maneja gestos y tiene que correr en el hilo principal. Cuando lo que mueve el
    puntero es la cabeza, el chequeo se manda a ese hilo.
+4. Centrar con B también revisa el borde, así corta un avance que esté en curso.
 
-La resolución quedó en una rama local, `tmp/integracion-giroscopio-arrastre`, como referencia para el
-merge.
+**El merge con `master` compiló, pero no estaba bien.** Git marcó como conflicto solo el punto 1; los
+puntos 2 a 4 los mezcló solo, sin avisar, y se quedaron con la versión de la otra rama. El resultado
+compilaba, pero el avance por borde no arrancaba con la cabeza, y si arrancaba con el joystick no se
+cortaba al sacar el puntero del borde con la cabeza. Lo encontramos comparando el resultado del merge
+contra la integración que ya habíamos probado en el teléfono, y se corrigió en un commit aparte. Con
+eso la rama quedó igual a lo probado, y se volvió a verificar en el celular.
 
 ### Limitaciones conocidas
 
@@ -817,6 +822,14 @@ Que el sistema responda "click hecho" no prueba que el click haya llegado; lo vi
 evidencia útil es un efecto visible del otro lado: una pantalla nueva en `dumpsys activity`, el texto
 de un botón que cambia, o la reacción del juego.
 
+**10. Un merge que compila no es un merge correcto.** *(E2-6)*
+
+Git solo marca como conflicto las líneas que tocaron las dos ramas; el resto lo mezcla solo. Si una rama
+cambia cómo funciona algo y la otra lo usa en un lugar distinto, el resultado compila y falla en el
+celular. Lo que sirvió fue probar la combinación de las dos ramas **antes** del merge, en una rama
+temporal, y después comparar el resultado del merge contra esa versión probada (`git diff
+<rama-probada> HEAD`): cualquier diferencia es algo que el merge decidió solo y hay que revisar.
+
 ---
 
 <a id="convenciones"></a>
@@ -843,12 +856,10 @@ de un botón que cambia, o la reacción del juego.
 - [x] `app/libs/sdk-debug.aar` ya está versionado.
 - [x] Blindar la carrera que podía cerrar la captura al rotar (limitación 2 de la Fase 2).
 - [x] **E2-6 — puntero con el giroscopio.** La cabeza mueve el puntero junto con el joystick, y el
-      botón B lo centra.
+      botón B lo centra. Integrado con el arrastre y el avance por borde de `master`.
 
 **Lo que sigue ahora:**
 
-- [ ] Mergear E2-6 con `jona/feature/arrastre-control`, usando la resolución de la rama local
-      `tmp/integracion-giroscopio-arrastre`.
 - [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`). Candidatos:
       scroll o volver al inicio.
 - [ ] Que el servicio deje pasar las teclas del control cuando no hay captura, así el control se
