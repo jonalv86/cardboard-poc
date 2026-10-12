@@ -32,7 +32,7 @@ class StereoOverlay(private val context: AccessibilityService) {
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val renderer = CardboardOverlayRenderer()
+    private val renderer = CardboardOverlayRenderer(HeadPointer.createIfAvailable(context))
 
     private var cardboardView: CardboardView? = null
     private var backHitArea: View? = null
