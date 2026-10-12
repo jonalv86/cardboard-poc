@@ -1,13 +1,8 @@
 package com.pps.cardboardpoc
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
-import android.graphics.Path
-import android.graphics.PathMeasure
+import android.graphics.PointF
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
 import android.view.KeyEvent
 import android.util.Log
 import android.view.InputDevice
@@ -28,36 +23,13 @@ class JoystickAccessibilityService : AccessibilityService() {
 
         // En modo mouse el control aparece como un dispositivo aparte, "VR BOX Mouse".
         private const val VR_BOX_DEVICE_PREFIX = "VR BOX"
-
-        /** Duración mínima y máxima de cada tramo del toque continuo, en ms. */
-        private const val SEGMENT_MIN_MS = 16L
-        private const val SEGMENT_MAX_MS = 100L
-
-        /** Cada cuánto se mira el cursor mientras el dedo está apoyado y quieto, en ms. */
-        private const val FOLLOW_POLL_MS = 16L
     }
 
-    private val gestureHandler = Handler(Looper.getMainLooper())
-
-    /** Último tramo despachado del toque en curso; null si no hay ningún dedo apoyado. */
-    private var pressStroke: GestureDescription.StrokeDescription? = null
-
-    /** Punto donde termina el último tramo despachado, que es donde tiene que arrancar el siguiente. */
-    private var pressLastX = 0f
-    private var pressLastY = 0f
+    private val pressFinger = VirtualFinger(this, "gatillo")
+    private val edgeScroller = EdgeScroller(this)
 
     /** Si el botón que apoya el dedo sigue apretado. */
     private var buttonHeld = false
-
-    /** Si hay un tramo despachado cuyo callback todavía no llegó. */
-    private var segmentInFlight = false
-
-    /** Desde cuándo (uptime en ms) se acumula el recorrido del cursor que va a cubrir el próximo tramo. */
-    private var followSinceMs = 0L
-
-    private var segmentCount = 0
-
-    private val followCursor = Runnable { dispatchNextSegment() }
 
     /**
      * Vincula el servicio activo al JoystickManager al momento de la conexión para permitir
@@ -169,18 +141,16 @@ class JoystickAccessibilityService : AccessibilityService() {
     /**
      * Apoya un dedo simulado en las coordenadas dadas y lo deja apoyado hasta [releasePress]. Mientras
      * tanto el dedo sigue al cursor, así que una pulsación corta es un tap, una larga sin mover es un
-     * long-press y una con el cursor en movimiento es un arrastre. El toque atraviesa la ventana
-     * estéreo, que no recibe toques, y llega a la app capturada.
+     * long-press y una con el cursor en movimiento es un arrastre.
      */
     fun pressAt(x: Float, y: Float) {
-        if (pressStroke != null) return
+        if (pressFinger.isDown) return
         buttonHeld = true
-        segmentCount = 0
-        pressLastX = x
-        pressLastY = y
-        Log.d(DRAG_TAG, "dedo apoyado en ($x, $y)")
-        dispatchSegment(
-            GestureDescription.StrokeDescription(pointPath(x, y), 0, SEGMENT_MIN_MS, true)
+        pressFinger.down(
+            x, y, settleMs = 0L,
+            target = { PointF(JoystickManager.cursorX, JoystickManager.cursorY) },
+            keepDown = { buttonHeld },
+            onUp = {}
         )
     }
 
@@ -188,85 +158,19 @@ class JoystickAccessibilityService : AccessibilityService() {
     fun releasePress() {
         if (!buttonHeld) return
         buttonHeld = false
-        // Con un tramo en vuelo, su callback es el que cierra el gesto.
-        if (pressStroke != null && !segmentInFlight) {
-            gestureHandler.removeCallbacks(followCursor)
-            dispatchNextSegment()
-        }
+        pressFinger.poke()
     }
 
-    /**
-     * Encadena el tramo siguiente del toque en curso, desde donde terminó el anterior hasta el cursor.
-     * Con el botón apretado y el cursor quieto no despacha nada: el dedo queda apoyado y se vuelve a
-     * mirar el cursor en el próximo tick. Con el botón suelto despacha el tramo final, que levanta el dedo.
-     */
-    private fun dispatchNextSegment() {
-        val previous = pressStroke ?: return
-        val targetX = JoystickManager.cursorX
-        val targetY = JoystickManager.cursorY
-        val moved = targetX != pressLastX || targetY != pressLastY
-        if (buttonHeld && !moved) {
-            followSinceMs = SystemClock.uptimeMillis()
-            gestureHandler.postDelayed(followCursor, FOLLOW_POLL_MS)
-            return
-        }
-
-        val path = pointPath(pressLastX, pressLastY)
-        if (moved) {
-            path.lineTo(targetX, targetY)
-            // El sistema exige que cada tramo arranque exactamente donde terminó el anterior, y ese
-            // final lo calcula con PathMeasure: puede diferir del cursor por redondeo.
-            val end = FloatArray(2)
-            val measure = PathMeasure(path, false)
-            measure.getPosTan(measure.length, end, null)
-            pressLastX = end[0]
-            pressLastY = end[1]
-        }
-        // El tramo dura lo que tardó el cursor en recorrerlo, para que la app vea la misma velocidad.
-        val duration = (SystemClock.uptimeMillis() - followSinceMs)
-            .coerceIn(SEGMENT_MIN_MS, SEGMENT_MAX_MS)
-        dispatchSegment(previous.continueStroke(path, 0, duration, buttonHeld))
+    /** Hace avanzar la pantalla hacia el borde indicado (-1, 0 o 1 por eje) hasta [stopEdgeScroll]. */
+    fun startEdgeScroll(dirX: Int, dirY: Int) {
+        edgeScroller.start(dirX, dirY)
     }
 
-    private fun dispatchSegment(stroke: GestureDescription.StrokeDescription) {
-        pressStroke = stroke
-        segmentInFlight = true
-        followSinceMs = SystemClock.uptimeMillis()
-        segmentCount++
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                segmentInFlight = false
-                if (stroke.willContinue()) {
-                    dispatchNextSegment()
-                } else {
-                    Log.d(
-                        DRAG_TAG,
-                        "dedo levantado en ($pressLastX, $pressLastY) tras $segmentCount tramos"
-                    )
-                    endPress()
-                }
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                Log.w(DRAG_TAG, "tramo $segmentCount cancelado en ($pressLastX, $pressLastY)")
-                endPress()
-            }
-        }, gestureHandler)
-        if (!accepted) {
-            Log.w(DRAG_TAG, "dispatchGesture rechazó el tramo $segmentCount")
-            endPress()
-        }
+    /** Detiene el avance arrancado con [startEdgeScroll]. */
+    fun stopEdgeScroll() {
+        edgeScroller.stop()
     }
 
-    private fun endPress() {
-        gestureHandler.removeCallbacks(followCursor)
-        pressStroke = null
-        segmentInFlight = false
-    }
-
-    private fun pointPath(x: Float, y: Float) = Path().apply { moveTo(x, y) }
-    
     /**
      * Inyecta la acción global del sistema equivalente a presionar el botón de "Atrás".
      * Funciona independientemente de la jerarquía de vistas de la aplicación actual.
