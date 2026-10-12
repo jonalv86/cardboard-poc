@@ -14,7 +14,6 @@ import com.google.cardboard.sdk.Viewport
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
 import javax.microedition.khronos.egl.EGLConfig
 
@@ -25,8 +24,13 @@ import javax.microedition.khronos.egl.EGLConfig
  *
  * La corrección de barril no se aplica acá: el SDK la aplica después sobre ese framebuffer, con la
  * malla de distorsión que calcula para cada lente.
+ *
+ * La imagen no se mueve con la cabeza. La orientación de la cabeza va a [headPointer], que es null
+ * cuando el teléfono no tiene giroscopio.
  */
-class CardboardOverlayRenderer : CardboardView.Renderer {
+class CardboardOverlayRenderer(
+    private val headPointer: HeadPointer?
+) : CardboardView.Renderer {
 
     /** Último frame publicado por la captura, todavía no subido a la textura. */
     private val pendingFrame = AtomicReference<Bitmap?>(null)
@@ -65,8 +69,6 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
 
     private val vertexBuffer = QUAD_VERTICES.toFloatBuffer()
     private val texCoordBuffer = QUAD_TEX_COORDS.toFloatBuffer()
-    private val eulerAngles = FloatArray(3)
-    private var framesSeen = 0
 
     /** Publica un frame nuevo. Se puede llamar desde cualquier hilo. */
     fun pushFrame(bitmap: Bitmap) {
@@ -116,11 +118,11 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
     override fun onNewFrame(headTransform: HeadTransform) {
         // Una sola subida por frame: onDrawEye corre dos veces sobre la misma textura.
         uploadPendingFrame()
+        headPointer?.update(headTransform)
         snapshotCursor()
         val lastMouseEvent = JoystickManager.lastMouseModeEventMs
         noticeVisible = lastMouseEvent != 0L &&
             SystemClock.uptimeMillis() - lastMouseEvent < JoystickManager.MOUSE_MODE_NOTICE_MS
-        logHeadOrientation(headTransform)
     }
 
     override fun onDrawEye(eye: CardboardView.Eye) {
@@ -285,26 +287,6 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
         frameAspect = bitmap.width.toFloat() / bitmap.height
     }
 
-    /**
-     * Deja rastro de la orientación que reporta el head tracker del SDK. En esta fase la imagen no
-     * se mueve con la cabeza: el log es la única forma de confirmar que el tracker lee bien.
-     */
-    private fun logHeadOrientation(headTransform: HeadTransform) {
-        if (framesSeen++ % HEAD_LOG_EVERY_N_FRAMES != 0) return
-
-        headTransform.getEulerAngles(eulerAngles, 0)
-        Log.d(
-            TAG,
-            String.format(
-                Locale.US,
-                "cabeza: pitch=%.1f yaw=%.1f roll=%.1f",
-                Math.toDegrees(eulerAngles[0].toDouble()),
-                Math.toDegrees(eulerAngles[1].toDouble()),
-                Math.toDegrees(eulerAngles[2].toDouble())
-            )
-        )
-    }
-
     private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
         val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource)
         val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource)
@@ -346,7 +328,6 @@ class CardboardOverlayRenderer : CardboardView.Renderer {
 
     private companion object {
         const val TAG = "CardboardCapture"
-        const val HEAD_LOG_EVERY_N_FRAMES = 60
 
         val QUAD_VERTICES = floatArrayOf(
             -1f, -1f,

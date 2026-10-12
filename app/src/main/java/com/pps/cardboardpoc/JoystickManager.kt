@@ -36,6 +36,18 @@ object JoystickManager {
     var screenHeight = 0
         private set
 
+    /** Posición horizontal que aporta el joystick, en píxeles de pantalla. */
+    private var baseX = 0f
+
+    /** Posición vertical que aporta el joystick, en píxeles de pantalla. */
+    private var baseY = 0f
+
+    /** Desplazamiento horizontal que aporta la cabeza, en píxeles; 0 sin giroscopio. */
+    private var headOffsetX = 0f
+
+    /** Desplazamiento vertical que aporta la cabeza, en píxeles; 0 sin giroscopio. */
+    private var headOffsetY = 0f
+
     // Umbral de zona muerta para contrarrestar el drift natural de los sticks analógicos
     private const val DEAD_ZONE = 0.15f
 
@@ -75,8 +87,7 @@ object JoystickManager {
             lastTickMs = now
             val ramp = ((now - moveStartMs) / ACCELERATION_MS).coerceAtMost(1f)
             val speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * ramp
-            cursorX = (cursorX + dx * speed * elapsedSeconds).coerceIn(0f, screenWidth.toFloat())
-            cursorY = (cursorY + dy * speed * elapsedSeconds).coerceIn(0f, screenHeight.toFloat())
+            moveBase(dx * speed * elapsedSeconds, dy * speed * elapsedSeconds)
             handler.postDelayed(this, TICK_MS)
         }
     }
@@ -118,20 +129,84 @@ object JoystickManager {
      * Ajusta los límites del cursor a la resolución de la captura. La primera vez lo centra; en los
      * cambios siguientes (una rotación, por ejemplo) conserva su posición relativa en la pantalla.
      */
+    @Synchronized
     fun setScreenSize(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         if (screenWidth == 0 || screenHeight == 0) {
-            cursorX = width / 2f
-            cursorY = height / 2f
+            baseX = width / 2f
+            baseY = height / 2f
         } else {
-            cursorX = cursorX * width / screenWidth
-            cursorY = cursorY * height / screenHeight
+            baseX = baseX * width / screenWidth
+            baseY = baseY * height / screenHeight
         }
         screenWidth = width
         screenHeight = height
+        updateCursor()
         Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
     }
-    
+
+    /**
+     * Registra el desplazamiento que aporta la cabeza, en píxeles desde la posición del joystick. Se
+     * llama desde el hilo de render, una vez por cuadro.
+     */
+    @Synchronized
+    fun setHeadOffset(dx: Float, dy: Float) {
+        headOffsetX = dx
+        headOffsetY = dy
+        updateCursor()
+    }
+
+    /**
+     * Cuántas veces se pidió centrar el cursor. La fuente de la cabeza lo compara con el último valor
+     * que atendió para tomar como frente la orientación de ese momento.
+     */
+    @Volatile
+    var recenterCount = 0
+        private set
+
+    /** Lleva el cursor al centro de la pantalla y descarta el desplazamiento del joystick y de la cabeza. */
+    @Synchronized
+    fun recenter() {
+        if (screenWidth == 0 || screenHeight == 0) return
+        baseX = screenWidth / 2f
+        baseY = screenHeight / 2f
+        headOffsetX = 0f
+        headOffsetY = 0f
+        updateCursor()
+        recenterCount++
+        Log.d(TAG, "Cursor centrado en ($cursorX, $cursorY)")
+    }
+
+    /**
+     * Mueve la posición del joystick. Contra un borde avanza solo hasta donde el cursor lo toca, así
+     * que al volver no hay desplazamiento de más que deshacer.
+     */
+    @Synchronized
+    private fun moveBase(stepX: Float, stepY: Float) {
+        baseX = limitStep(baseX, stepX, headOffsetX, screenWidth)
+        baseY = limitStep(baseY, stepY, headOffsetY, screenHeight)
+        updateCursor()
+    }
+
+    /**
+     * Aplica un paso del joystick sobre un eje. Si la cabeza ya lleva el cursor más allá del borde,
+     * empujar hacia ese borde no mueve la base, pero tampoco la hace retroceder.
+     */
+    private fun limitStep(base: Float, step: Float, headOffset: Float, size: Int): Float {
+        val target = base + step
+        return if (step > 0f) {
+            minOf(target, maxOf(base, size - headOffset))
+        } else {
+            maxOf(target, minOf(base, -headOffset))
+        }
+    }
+
+    private fun updateCursor() {
+        if (screenWidth == 0 || screenHeight == 0) return
+        cursorX = (baseX + headOffsetX).coerceIn(0f, screenWidth.toFloat())
+        cursorY = (baseY + headOffsetY).coerceIn(0f, screenHeight.toFloat())
+    }
+
     /**
      * Registra la inclinación actual del stick (-1..1 por eje). El cursor se sigue moviendo mientras
      * no vuelva al centro, con una velocidad proporcional a la inclinación.
