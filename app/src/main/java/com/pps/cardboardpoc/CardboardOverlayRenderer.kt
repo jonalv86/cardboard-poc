@@ -55,6 +55,17 @@ class CardboardOverlayRenderer(
     private var cursorPositionHandle = 0
     private var cursorCenterHandle = 0
     private var cursorHalfSizeHandle = 0
+    private var cursorDirectionHandle = 0
+    private var cursorFillHandle = 0
+
+    /**
+     * Borde sobre el que está el cursor, tomado una vez por cuadro: dirección (-1, 0 o 1 por eje, en
+     * coordenadas de pantalla) y fracción de la espera cumplida. Con el llenado negativo se dibuja el
+     * cursor común.
+     */
+    private var edgeDirX = 0
+    private var edgeDirY = 0
+    private var edgeFill = -1f
 
     /**
      * Posición del cursor como fracción de la pantalla (0..1), tomada una vez por cuadro para que los
@@ -80,6 +91,8 @@ class CardboardOverlayRenderer(
         cursorPositionHandle = GLES20.glGetAttribLocation(cursorProgram, "aPosition")
         cursorCenterHandle = GLES20.glGetUniformLocation(cursorProgram, "uCenter")
         cursorHalfSizeHandle = GLES20.glGetUniformLocation(cursorProgram, "uHalfSize")
+        cursorDirectionHandle = GLES20.glGetUniformLocation(cursorProgram, "uDirection")
+        cursorFillHandle = GLES20.glGetUniformLocation(cursorProgram, "uFill")
 
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         if (program == 0) return
@@ -214,13 +227,23 @@ class CardboardOverlayRenderer(
 
     /**
      * Dibuja el cursor encima del frame, en el mismo sistema de coordenadas que el quad: así queda
-     * sobre el mismo píxel de la pantalla capturada que va a recibir el click.
+     * sobre el mismo píxel de la pantalla capturada que va a recibir el click. Mientras el cursor está
+     * sobre un borde se dibuja como una flecha hacia ese borde que se llena durante la espera.
      */
     private fun drawCursor(scaleX: Float, scaleY: Float) {
         if (cursorProgram == 0 || cursorFractionX < 0f) return
 
-        val centerX = (cursorFractionX * 2f - 1f) * scaleX
-        val centerY = (1f - cursorFractionY * 2f) * scaleY
+        val onEdge = edgeFill >= 0f
+        val radiusPx = if (onEdge) ARROW_RADIUS_PX else CURSOR_RADIUS_PX
+        var fractionX = cursorFractionX
+        var fractionY = cursorFractionY
+        if (onEdge) {
+            // El cursor está sobre el borde: la flecha se corre hacia adentro para que se vea entera.
+            fractionX -= edgeDirX * radiusPx / textureWidth
+            fractionY -= edgeDirY * radiusPx / textureHeight
+        }
+        val centerX = (fractionX * 2f - 1f) * scaleX
+        val centerY = (1f - fractionY * 2f) * scaleY
 
         GLES20.glUseProgram(cursorProgram)
         GLES20.glUniform2f(cursorCenterHandle, centerX, centerY)
@@ -228,9 +251,12 @@ class CardboardOverlayRenderer(
         // queda circular aunque el frame y la mitad de cada ojo tengan proporciones distintas.
         GLES20.glUniform2f(
             cursorHalfSizeHandle,
-            CURSOR_RADIUS_PX / textureWidth * 2f * scaleX,
-            CURSOR_RADIUS_PX / textureHeight * 2f * scaleY
+            radiusPx / textureWidth * 2f * scaleX,
+            radiusPx / textureHeight * 2f * scaleY
         )
+        // En GL el eje vertical crece hacia arriba y en la pantalla hacia abajo.
+        GLES20.glUniform2f(cursorDirectionHandle, edgeDirX.toFloat(), -edgeDirY.toFloat())
+        GLES20.glUniform1f(cursorFillHandle, edgeFill)
         GLES20.glEnableVertexAttribArray(cursorPositionHandle)
         GLES20.glVertexAttribPointer(cursorPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -246,6 +272,15 @@ class CardboardOverlayRenderer(
         }
         cursorFractionX = (JoystickManager.cursorX / width).coerceIn(0f, 1f)
         cursorFractionY = (JoystickManager.cursorY / height).coerceIn(0f, 1f)
+
+        val contact = JoystickManager.edgeContact
+        if (contact == null) {
+            edgeFill = -1f
+        } else {
+            edgeDirX = contact.dirX
+            edgeDirY = contact.dirY
+            edgeFill = contact.fill(SystemClock.uptimeMillis())
+        }
     }
 
     override fun onFinishFrame(viewport: Viewport?) = Unit
@@ -391,14 +426,50 @@ class CardboardOverlayRenderer(
             }
         """
 
-        // Disco rojo con centro blanco: se distingue sobre fondos claros y oscuros.
+        /** Radio de la flecha de borde, en píxeles de la pantalla capturada. */
+        const val ARROW_RADIUS_PX = 48f
+
+        // Sin borde (uFill < 0): disco rojo con centro blanco, que se distingue sobre fondos claros y
+        // oscuros. En un borde: punta de flecha con muesca atrás, orientada hacia uDirection, con contorno
+        // blanco, gris por dentro y azul desde atrás hasta la fracción uFill del largo. La forma sale de
+        // dos distancias con signo: a los lados de la punta (d1) y a los lados de la muesca (d2).
         const val CURSOR_FRAGMENT_SHADER = """
             precision mediump float;
+            uniform vec2 uDirection;
+            uniform float uFill;
             varying vec2 vLocal;
+
+            const float TIP = 0.78;
+            const float BACK = -0.72;
+            const float HALF_WIDTH = 0.72;
+            const float NOTCH = -0.3;
+            const float OUTLINE = 0.07;
+
             void main() {
-                float d = length(vLocal);
-                if (d > 1.0) discard;
-                gl_FragColor = d < 0.4 ? vec4(1.0) : vec4(1.0, 0.0, 0.0, 1.0);
+                if (uFill < 0.0) {
+                    float d = length(vLocal);
+                    if (d > 1.0) discard;
+                    gl_FragColor = d < 0.4 ? vec4(1.0) : vec4(1.0, 0.0, 0.0, 1.0);
+                    return;
+                }
+                float along = dot(vLocal, uDirection);
+                float across = abs(dot(vLocal, vec2(-uDirection.y, uDirection.x)));
+
+                float k1 = HALF_WIDTH / (TIP - BACK);
+                float d1 = (across + k1 * along - k1 * TIP) / sqrt(1.0 + k1 * k1);
+                float k2 = (NOTCH - BACK) / HALF_WIDTH;
+                float d2 = (NOTCH - k2 * across - along) / sqrt(1.0 + k2 * k2);
+                float d = max(d1, d2);
+
+                if (d > OUTLINE) discard;
+                if (d > 0.0) {
+                    gl_FragColor = vec4(1.0);
+                    return;
+                }
+                float progress = (along - BACK) / (TIP - BACK);
+                gl_FragColor = progress <= uFill
+                    ? vec4(0.15, 0.45, 1.0, 1.0)
+                    : vec4(0.4, 0.4, 0.4, 1.0);
             }
         """
     }

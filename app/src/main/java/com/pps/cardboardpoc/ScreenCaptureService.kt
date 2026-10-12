@@ -277,6 +277,7 @@ class ScreenCaptureService : Service() {
         if (isCapturing) {
             isCapturing = false
             JoystickManager.accessibilityService?.setCaptureActive(false)
+            JoystickManager.refreshEdgeContact()
         }
     }
 
