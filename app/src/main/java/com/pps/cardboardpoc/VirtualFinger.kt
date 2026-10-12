@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import kotlin.math.roundToInt
 
 /**
  * Dedo simulado que se apoya, sigue un objetivo mientras deba seguir apoyado y después se levanta. Se
@@ -97,7 +98,11 @@ class VirtualFinger(
         val previous = stroke ?: return
         val holding = keepDown()
         val point = target()
-        val moved = point.x != lastX || point.y != lastY
+        // El sistema redondea cada punto del gesto a píxeles enteros: un tramo que no cambia de píxel
+        // no genera ningún evento y lo informa como cancelado. Pasa con el temblor de la cabeza, que
+        // mueve el cursor fracciones de píxel.
+        val moved = point.x.roundToInt() != lastX.roundToInt() ||
+            point.y.roundToInt() != lastY.roundToInt()
         if (holding && !moved) {
             followSinceMs = SystemClock.uptimeMillis()
             handler.postDelayed(followTarget, FOLLOW_POLL_MS)
