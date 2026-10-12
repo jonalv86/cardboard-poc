@@ -11,6 +11,7 @@
 - [Fase 1.5 — Ventana overlay](#fase-15)
 - [Fase 2 — Integración con Cardboard SDK](#fase-2)
 - [Fase 3 — Interacción con el control Bluetooth](#fase-3)
+- [E2-6 — El puntero con el giroscopio](#e2-6)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -623,6 +624,111 @@ Clans.
 
 ---
 
+<a id="e2-6"></a>
+## E2-6 — El puntero con el giroscopio
+
+**Objetivo:** que el puntero también se mueva con la cabeza, usando el giroscopio del teléfono, sin
+sacar el joystick. No hay opción para activarlo: si el teléfono tiene giroscopio se usa, y si no, el
+puntero sigue andando solo con el joystick, igual que antes.
+
+**Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16), visor y control VR BOX.
+
+### Lo primero: la pantalla virtual está pegada a la cabeza
+
+La idea original era que el puntero apuntara "hacia donde mira la cabeza", como si la pantalla
+estuviera fija en el espacio y uno la recorriera con la mirada. Antes de escribir nada revisamos el
+renderizado, y no es así: la imagen se dibuja siempre en el mismo lugar de cada ojo, y la orientación
+de la cabeza solo se usaba para el log (es lo que se decidió en la Fase 2). Al girar la cabeza, la
+pantalla gira con uno.
+
+Había dos caminos:
+
+- **La cabeza como un mouse.** La imagen queda quieta en la vista y girar la cabeza mueve el puntero
+  sobre ella. No se toca el renderizado.
+- **Fijar la pantalla en el espacio.** Rehacer el dibujo de cada ojo con la vista y la perspectiva que
+  da el SDK. Es más fiel a la idea original, pero reescribe el renderizado, la imagen se sale de la vista
+  al girar y cambia lo que ve el avance por borde de la otra rama.
+
+**Elegimos la cabeza como mouse.** La regla de "cabeza más joystick" se cumple igual, y el cambio queda
+acotado al puntero.
+
+### Cómo funciona
+
+- **El puntero es la suma de dos fuentes:** el giro de la cabeza desde el "frente" y el desplazamiento
+  del joystick. La cabeza da el movimiento grueso y el joystick el ajuste fino.
+- **La escala:** girar la cabeza **80°** lleva el puntero de un borde lateral al otro. Arriba y abajo
+  usan la misma escala, así que llegar al borde de arriba o de abajo pide unos ±18°. Empezamos con 40° y
+  resultó demasiado rápido.
+- **El frente** se toma solo al empezar cada captura, después de medio segundo para que los sensores se
+  asienten. Durante ese medio segundo el puntero queda donde lo dejó el joystick.
+- **Contra el temblor** hay un filtro de 60 ms sobre los ángulos de la cabeza. Con una escala tan
+  sensible, un temblor mínimo de la cabeza se ve como varios píxeles de puntero.
+- **El borde:** el puntero sigue limitado a la pantalla. Si el joystick empuja contra un borde, no
+  acumula desplazamiento de más: al soltarlo y volver, el puntero se despega enseguida.
+- **Sin giroscopio** la parte de la cabeza vale siempre cero, y el puntero se comporta exactamente como
+  en la Fase 3.
+
+La orientación se toma del head tracker del Cardboard SDK, que ya estaba andando desde la Fase 2, y no
+leyendo los sensores a mano: el tracker ya combina giroscopio y acelerómetro y tiene en cuenta la
+rotación de la pantalla. Lo que el SDK **no** expone desde Java es el recentrado ni el filtro de
+suavizado (existen en la capa en C, pero la capa Java no los publica), así que esas dos cosas se
+hicieron en Kotlin, en `HeadPointer`.
+
+Un detalle técnico: la cabeza mueve el puntero desde el hilo de renderizado y el joystick desde el hilo
+principal. El cálculo de la posición está protegido para que los dos no se pisen.
+
+### Centrar con el botón B
+
+El giroscopio acumula un error chico con cada giro: con el tiempo, mirar al frente deja de corresponder
+al centro de la pantalla. Lo mismo pasa si uno se acomoda en la silla. Primero lo probamos sin ninguna
+corrección, y después se decidió usar el **botón B** del control para centrar: lleva el puntero al
+centro y toma como nuevo frente hacia donde se está mirando en ese momento.
+
+Para asignarlo hubo que relevar el botón, con el método del punto 8 de "Cómo diagnosticamos": el B
+físico manda `BTN_NORTH`, que Android traduce como `KEYCODE_BUTTON_X`. Ojo con la confusión: el código
+que Android llama `BUTTON_B` es el botón **A** físico (atrás), no el B. Como la app no tenía mapeado
+`BUTTON_X`, al principio el botón no dejaba ningún rastro en el log.
+
+### Prueba de integración con el arrastre y el avance por borde
+
+El arrastre con el control y el avance automático por borde se hicieron en otra rama
+(`jona/feature/arrastre-control`). Antes del commit probamos las dos cosas juntas en una rama
+temporal, y anduvo todo: tocar, mantener apretado y arrastrar con la cabeza y con el joystick, el avance
+por borde mirando más allá de un borde, y el centrado con B.
+
+Al juntarlas hubo que resolver tres cosas, que van a volver a aparecer cuando se mergeen las ramas:
+
+1. El joystick de la otra rama mueve el puntero con `moveCursorTo`; acá lo hace con `moveBase`. Queda
+   `moveBase`, seguido del chequeo de borde.
+2. `moveCursorTo` se mantiene, porque es parte de lo que expone el puntero, pero ahora mueve la parte
+   del joystick para que la suma dé la posición pedida.
+3. El chequeo de borde maneja gestos y tiene que correr en el hilo principal. Cuando lo que mueve el
+   puntero es la cabeza, el chequeo se manda a ese hilo.
+
+La resolución quedó en una rama local, `tmp/integracion-giroscopio-arrastre`, como referencia para el
+merge.
+
+### Limitaciones conocidas
+
+1. **La pantalla no está fija en el espacio**, por la decisión de arriba: girar la cabeza mueve el
+   puntero, no la vista.
+2. **El frente se corre con el tiempo** y hay que centrar con B cada tanto.
+3. **Con la otra rama integrada, mirar un poco de más hacia un costado ya dispara el avance por
+   borde.** En la prueba no molestó, pero si molesta se ajusta la escala o la espera del borde.
+4. **La escala y el suavizado se ajustaron solo en el S25 Ultra.** Están en `HeadPointer`
+   (`FULL_WIDTH_DEGREES` y `SMOOTHING_MS`).
+5. **Inclinar la cabeza de costado no hace nada**: solo cuentan girar a los lados y mirar arriba o
+   abajo.
+
+Para probar el modo solo joystick sin otro teléfono hay una constante de debug,
+`SIMULATE_NO_GYROSCOPE` en `HeadPointer`, que está en `false`.
+
+**Resultado: hito cerrado.** El puntero se mueve con la cabeza y el joystick a la vez, el gatillo sigue
+tocando donde está el puntero y B lo centra. Verificado en el celular, solo y junto con la rama de
+arrastre.
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -646,6 +752,8 @@ para responder una pregunta concreta.
   **"la captura anduvo y el contenido es negro"**, que a simple vista son idénticos. Fue lo que
   confirmó el comportamiento de las apps con DRM.
 - Los ángulos de la cabeza cada 60 cuadros. Loguear en cada cuadro satura el log y no aporta nada.
+  Desde E2-6 van con su propio tag, `GyroDebug`, junto con el frente que se tomó y el desplazamiento
+  que la cabeza le da al puntero.
 
 **2. Leer el código fuente del SDK antes de escribir el nuestro.**
 
@@ -734,9 +842,13 @@ de un botón que cambia, o la reacción del juego.
 - [x] Validar la interacción contra apps candidatas al demo (Ajustes, Chrome, Clash of Clans).
 - [x] `app/libs/sdk-debug.aar` ya está versionado.
 - [x] Blindar la carrera que podía cerrar la captura al rotar (limitación 2 de la Fase 2).
+- [x] **E2-6 — puntero con el giroscopio.** La cabeza mueve el puntero junto con el joystick, y el
+      botón B lo centra.
 
 **Lo que sigue ahora:**
 
+- [ ] Mergear E2-6 con `jona/feature/arrastre-control`, usando la resolución de la rama local
+      `tmp/integracion-giroscopio-arrastre`.
 - [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`). Candidatos:
       scroll o volver al inicio.
 - [ ] Que el servicio deje pasar las teclas del control cuando no hay captura, así el control se
