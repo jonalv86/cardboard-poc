@@ -223,16 +223,24 @@ object JoystickManager {
      */
     @Synchronized
     private fun moveBase(stepX: Float, stepY: Float) {
-        baseX = limitStep(baseX, stepX, headOffsetX, screenWidth)
-        baseY = limitStep(baseY, stepY, headOffsetY, screenHeight)
+        baseX = limitStep(baseX, stepX, headOffsetX, screenWidth.toFloat())
+        baseY = limitStep(baseY, stepY, headOffsetY, maxCursorY())
         updateCursor()
     }
+
+    /**
+     * Límite inferior del cursor: el borde de abajo de la franja de "Inicio", que no es parte de la
+     * pantalla capturada. Con el gatillo apretado es el borde de la pantalla, así un arrastre no se
+     * sale de la app.
+     */
+    private fun maxCursorY(): Float =
+        screenHeight + if (pressing) 0f else HomeStrip.HEIGHT_PX
 
     /**
      * Aplica un paso del joystick sobre un eje. Si la cabeza ya lleva el cursor más allá del borde,
      * empujar hacia ese borde no mueve la base, pero tampoco la hace retroceder.
      */
-    private fun limitStep(base: Float, step: Float, headOffset: Float, size: Int): Float {
+    private fun limitStep(base: Float, step: Float, headOffset: Float, size: Float): Float {
         val target = base + step
         return if (step > 0f) {
             minOf(target, maxOf(base, size - headOffset))
@@ -244,7 +252,7 @@ object JoystickManager {
     private fun updateCursor() {
         if (screenWidth == 0 || screenHeight == 0) return
         cursorX = (baseX + headOffsetX).coerceIn(0f, screenWidth.toFloat())
-        cursorY = (baseY + headOffsetY).coerceIn(0f, screenHeight.toFloat())
+        cursorY = (baseY + headOffsetY).coerceIn(0f, maxCursorY())
     }
 
     /**
@@ -276,7 +284,7 @@ object JoystickManager {
         synchronized(this) {
             if (screenWidth == 0 || screenHeight == 0) return
             baseX = x.coerceIn(0f, screenWidth.toFloat()) - headOffsetX
-            baseY = y.coerceIn(0f, screenHeight.toFloat()) - headOffsetY
+            baseY = y.coerceIn(0f, maxCursorY()) - headOffsetY
             updateCursor()
         }
         refreshEdgeContact()
@@ -286,13 +294,20 @@ object JoystickManager {
      * Vuelve a evaluar si el cursor está sobre un borde. Si se queda ahí [EDGE_DWELL_MS], la pantalla
      * avanza hacia ese lado hasta que el cursor sale del borde. En una esquina gana el borde vertical.
      * Con el gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura
-     * tampoco: no hay pantalla estéreo que mirar.
+     * tampoco: no hay pantalla estéreo que mirar. El borde de abajo es el de la franja de "Inicio", así
+     * que pasar de la imagen a la franja no cuenta como borde, y dentro de la franja los costados
+     * tampoco: no son parte de la app.
      */
     fun refreshEdgeContact() {
         val enabled = !pressing && ScreenCaptureService.isCapturing &&
             screenWidth != 0 && screenHeight != 0
-        val dirY = if (enabled) edgeDirection(cursorY, screenHeight) else 0
-        val dirX = if (enabled && dirY == 0) edgeDirection(cursorX, screenWidth) else 0
+        val dirY = if (enabled) edgeDirection(cursorY, maxCursorY()) else 0
+        val inStrip = HomeStrip.contains(cursorY, screenHeight)
+        val dirX = if (enabled && dirY == 0 && !inStrip) {
+            edgeDirection(cursorX, screenWidth.toFloat())
+        } else {
+            0
+        }
         val current = edgeContact
         if (current != null && current.dirX == dirX && current.dirY == dirY) return
         if (current == null && dirX == 0 && dirY == 0) return
@@ -309,7 +324,7 @@ object JoystickManager {
         handler.postDelayed(startEdgeScroll, EDGE_DWELL_MS)
     }
 
-    private fun edgeDirection(value: Float, size: Int): Int = when {
+    private fun edgeDirection(value: Float, size: Float): Int = when {
         value <= 0f -> -1
         value >= size -> 1
         else -> 0
@@ -335,9 +350,15 @@ object JoystickManager {
     
     /**
      * Apoya un dedo simulado donde está el cursor. El dedo lo sigue hasta [releasePress], así que
-     * sirve tanto para un tap como para un arrastre.
+     * sirve tanto para un tap como para un arrastre. En la franja de "Inicio" no apoya nada: sobre el
+     * botón vuelve al panel, y en el resto de la franja no hace nada.
      */
     fun pressDown() {
+        if (HomeStrip.contains(cursorY, screenHeight)) {
+            if (HomeStrip.isOnButton(cursorX, cursorY, screenWidth, screenHeight)) showPanel()
+            else Log.d(TAG, "Gatillo en la franja, fuera del botón: no se toca la app")
+            return
+        }
         Log.d(TAG, "Apoyando dedo en: ($cursorX, $cursorY)")
         pressing = true
         refreshEdgeContact()
@@ -351,6 +372,14 @@ object JoystickManager {
         refreshEdgeContact()
     }
     
+    /** Vuelve al panel de apps del visor. Fuera de la captura no hace nada. */
+    fun showPanel() {
+        if (!ScreenCaptureService.isCapturing) return
+        val service = accessibilityService ?: return
+        Log.d(TAG, "Inicio: vuelve al panel")
+        PanelActivity.show(service)
+    }
+
     /**
      * Solicita la emulación de la pulsación física del botón de retroceso del sistema operativo.
      */

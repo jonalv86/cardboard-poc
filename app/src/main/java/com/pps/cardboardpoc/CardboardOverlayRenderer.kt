@@ -43,6 +43,12 @@ class CardboardOverlayRenderer(
     private var textureHandle = 0
     private var textureId = 0
     private var noticeTextureId = 0
+    private var homeTextureId = 0
+    private var homeHoverTextureId = 0
+    private var stripTextureId = 0
+
+    /** Si el cursor está sobre el botón "Inicio"; se decide una vez por cuadro para los dos ojos. */
+    private var homeHovered = false
 
     /** Si en este cuadro se dibuja el aviso de modo mouse; se decide una vez para los dos ojos. */
     private var noticeVisible = false
@@ -103,6 +109,9 @@ class CardboardOverlayRenderer(
         offsetHandle = GLES20.glGetUniformLocation(program, "uOffset")
         textureHandle = GLES20.glGetUniformLocation(program, "uTexture")
         noticeTextureId = createNoticeTexture()
+        homeTextureId = createHomeTexture(HOME_BACKGROUND)
+        homeHoverTextureId = createHomeTexture(HOME_HOVER_BACKGROUND)
+        stripTextureId = createSolidTexture(STRIP_BACKGROUND)
 
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
@@ -157,6 +166,7 @@ class CardboardOverlayRenderer(
                 scaleY = 1f
             }
             drawTexturedQuad(textureId, scaleX, scaleY, 0f, 0f)
+            drawHomeStrip(scaleX, scaleY)
             drawCursor(scaleX, scaleY)
         }
 
@@ -226,6 +236,69 @@ class CardboardOverlayRenderer(
     }
 
     /**
+     * Crea la textura del botón "Inicio" con el fondo dado. Se dibuja con Canvas una sola vez: el
+     * texto es fijo y solo cambia el fondo según si el cursor está encima.
+     */
+    private fun createHomeTexture(background: Int): Int {
+        val bitmap = Bitmap.createBitmap(
+            (HomeStrip.BUTTON_WIDTH_PX * HOME_TEXTURE_SCALE).toInt(),
+            (HomeStrip.BUTTON_HEIGHT_PX * HOME_TEXTURE_SCALE).toInt(),
+            Bitmap.Config.ARGB_8888
+        )
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(background)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = bitmap.height * 0.55f
+            textAlign = Paint.Align.CENTER
+        }
+        val baseline = bitmap.height / 2f - (paint.descent() + paint.ascent()) / 2f
+        canvas.drawText("Inicio", bitmap.width / 2f, baseline, paint)
+        return uploadTexture(bitmap)
+    }
+
+    /** Textura de un solo color, para estirarla sobre un área. */
+    private fun createSolidTexture(color: Int): Int {
+        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(color)
+        return uploadTexture(bitmap)
+    }
+
+    /** Sube el bitmap a una textura nueva y lo libera. */
+    private fun uploadTexture(bitmap: Bitmap): Int {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        bitmap.recycle()
+        return ids[0]
+    }
+
+    /**
+     * Dibuja la franja de "Inicio" pegada debajo del frame, con el botón centrado, en el mismo sistema
+     * de coordenadas que el cursor: la franja ocupa las alturas de pantalla que siguen al borde de abajo.
+     */
+    private fun drawHomeStrip(scaleX: Float, scaleY: Float) {
+        val width = JoystickManager.screenWidth
+        val height = JoystickManager.screenHeight
+        val button = if (homeHovered) homeHoverTextureId else homeTextureId
+        if (width == 0 || height == 0 || button == 0 || stripTextureId == 0) return
+
+        val stripHalfHeight = HomeStrip.HEIGHT_PX / height * scaleY
+        val stripCenterY = -scaleY - stripHalfHeight
+        drawTexturedQuad(stripTextureId, scaleX, stripHalfHeight, 0f, stripCenterY)
+        drawTexturedQuad(
+            button,
+            HomeStrip.BUTTON_WIDTH_PX / width * scaleX,
+            HomeStrip.BUTTON_HEIGHT_PX / height * scaleY,
+            0f,
+            stripCenterY
+        )
+    }
+
+    /**
      * Dibuja el cursor encima del frame, en el mismo sistema de coordenadas que el quad: así queda
      * sobre el mismo píxel de la pantalla capturada que va a recibir el click. Mientras el cursor está
      * sobre un borde se dibuja como una flecha hacia ese borde que se llena durante la espera.
@@ -271,7 +344,12 @@ class CardboardOverlayRenderer(
             return
         }
         cursorFractionX = (JoystickManager.cursorX / width).coerceIn(0f, 1f)
-        cursorFractionY = (JoystickManager.cursorY / height).coerceIn(0f, 1f)
+        // Más allá de 1 el cursor está en la franja de "Inicio", debajo del frame.
+        cursorFractionY =
+            (JoystickManager.cursorY / height).coerceIn(0f, 1f + HomeStrip.HEIGHT_PX / height)
+        homeHovered = HomeStrip.isOnButton(
+            JoystickManager.cursorX, JoystickManager.cursorY, width, height
+        )
 
         val contact = JoystickManager.edgeContact
         if (contact == null) {
@@ -293,6 +371,12 @@ class CardboardOverlayRenderer(
         if (noticeTextureId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(noticeTextureId), 0)
             noticeTextureId = 0
+        }
+        if (homeTextureId != 0) {
+            GLES20.glDeleteTextures(3, intArrayOf(homeTextureId, homeHoverTextureId, stripTextureId), 0)
+            homeTextureId = 0
+            homeHoverTextureId = 0
+            stripTextureId = 0
         }
         if (program != 0) {
             GLES20.glDeleteProgram(program)
@@ -411,6 +495,13 @@ class CardboardOverlayRenderer(
         // Por encima del centro, para no tapar el cursor y lejos de los bordes, donde la
         // distorsión de la lente lo deforma más.
         const val NOTICE_CENTER_Y = 0.4f
+
+        const val HOME_BACKGROUND = 0xFF37474F.toInt()
+        const val HOME_HOVER_BACKGROUND = 0xFF1565C0.toInt()
+        const val STRIP_BACKGROUND = 0xFF1E1E1E.toInt()
+
+        /** Resolución de la textura del botón "Inicio" respecto de su tamaño en pantalla. */
+        const val HOME_TEXTURE_SCALE = 2f
 
         /** Radio del cursor en píxeles de la pantalla capturada. */
         const val CURSOR_RADIUS_PX = 20f

@@ -23,11 +23,14 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Foreground service dueño del pipeline de captura: consume el token de MediaProjection, lee los
@@ -40,7 +43,16 @@ class ScreenCaptureService : Service() {
     /** Serializa el uso del ImageReader entre CaptureThread y el main thread, que lo cierra. */
     private val captureLock = Any()
 
+    @Volatile
     private var overlay: StereoOverlay? = null
+
+    /** Captura por ventanas, para cuando la tarea capturada no está a la vista. Null antes de Android 14. */
+    private var windowSource: WindowScreenshotSource? = null
+
+    private val startWindowSource = Runnable {
+        Log.d(TAG, "fuente: ventanas")
+        windowSource?.start()
+    }
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -49,6 +61,12 @@ class ScreenCaptureService : Service() {
     private var captureWidth = 0
     private var captureHeight = 0
     private var framesSeen = 0
+
+    /** Estado de [checkFullScreenChoice]; solo lo toca CaptureThread después del arranque. */
+    private var fullScreenCheckDone = false
+    private var blackStartupFrames = 0
+    @Volatile
+    private var captureStartMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -115,12 +133,26 @@ class ScreenCaptureService : Service() {
         // si no, tira IllegalStateException y la app se cierra.
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
+                Log.d(TAG, "el sistema detuvo la proyección")
                 releaseCapture()
                 stopSelf()
+            }
+
+            override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                Log.d(TAG, "contenido capturado visible=$isVisible")
+                onCapturedVisibilityChanged(isVisible)
             }
         }, mainHandler)
 
         overlay = StereoOverlay(host).apply { show() }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            windowSource = WindowScreenshotSource(host) { frame -> overlay?.updateFrame(frame) }
+        }
+        capturedTaskVisible = true
+        fullScreenCheckDone = false
+        blackStartupFrames = 0
+        captureStartMs = SystemClock.uptimeMillis()
+        fullScreenRejectedState.value = false
         isCapturing = true
         host.setCaptureActive(true)
 
@@ -130,6 +162,30 @@ class ScreenCaptureService : Service() {
 
         rebuildCapture()
         registerDisplayListener()
+
+        // Se elige CardboardPOC en el selector, así que la tarea capturada es la del panel.
+        PanelActivity.show(host)
+    }
+
+    /**
+     * Elige de dónde salen los frames según si la tarea capturada está a la vista. Al ocultarse se
+     * congela el último frame y, si sigue oculta pasado [SOURCE_SWITCH_DELAY_MS], arranca la captura
+     * por ventanas; la espera descarta los avisos de ocultamiento que el sistema revierte en pocos
+     * milisegundos (pasa al cerrar una actividad dentro de la tarea). Al volver a verse, la proyección
+     * retoma en el acto.
+     */
+    private fun onCapturedVisibilityChanged(visible: Boolean) {
+        mainHandler.removeCallbacks(startWindowSource)
+        capturedTaskVisible = visible
+        val source = windowSource ?: return
+        if (visible) {
+            if (source.isRunning) {
+                source.stop()
+                Log.d(TAG, "fuente: proyección")
+            }
+        } else {
+            mainHandler.postDelayed(startWindowSource, SOURCE_SWITCH_DELAY_MS)
+        }
     }
 
     /**
@@ -171,7 +227,8 @@ class ScreenCaptureService : Service() {
                 }
             }
             logFrameContent(bitmap)
-            mainHandler.post { overlay?.updateFrame(bitmap) }
+            checkFullScreenChoice(bitmap)
+            if (capturedTaskVisible) mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
 
         val screen = currentDisplayMetrics()
@@ -219,18 +276,54 @@ class ScreenCaptureService : Service() {
 
         var conContenido = 0
         var lumaMax = 0
+        forEachSample(frame) { luma ->
+            if (luma > 8) conContenido++
+            if (luma > lumaMax) lumaMax = luma
+        }
+        Log.d(TAG, "muestreo: $conContenido/100 pixeles con contenido, luma max=$lumaMax")
+    }
+
+    /**
+     * Detecta que en el selector se eligió la pantalla completa en vez de "una sola app": así la
+     * captura incluye la ventana estéreo, que sale en negro por FLAG_SECURE, y los frames llegan
+     * enteros en negro sin parar. Los primeros pueden tener contenido, porque se capturan antes de
+     * que la ventana estéreo se dibuje, así que lo que cuenta es una racha de frames negros. Solo se
+     * mira al principio de la sesión: después, una app en negro (un video, por ejemplo) no tiene
+     * que cortarla. Corre en CaptureThread.
+     */
+    private fun checkFullScreenChoice(frame: Bitmap) {
+        if (fullScreenCheckDone) return
+        if (SystemClock.uptimeMillis() - captureStartMs > FULL_SCREEN_CHECK_WINDOW_MS) {
+            fullScreenCheckDone = true
+            return
+        }
+        var hasContent = false
+        forEachSample(frame) { luma -> if (luma > 8) hasContent = true }
+        if (hasContent) {
+            blackStartupFrames = 0
+            return
+        }
+        if (++blackStartupFrames < FULL_SCREEN_BLACK_FRAMES) return
+
+        fullScreenCheckDone = true
+        Log.w(TAG, "se eligió la pantalla completa: dentro del visor sale en negro, se detiene")
+        mainHandler.post {
+            fullScreenRejectedState.value = true
+            stopSelf()
+        }
+    }
+
+    /** Recorre una grilla de 10 x 10 puntos del frame con el brillo de cada uno (0..255). */
+    private inline fun forEachSample(frame: Bitmap, onSample: (luma: Int) -> Unit) {
         for (fila in 0 until 10) {
             for (columna in 0 until 10) {
                 val pixel = frame.getPixel(
                     frame.width * columna / 10 + frame.width / 20,
                     frame.height * fila / 10 + frame.height / 20
                 )
-                val luma = maxOf(Color.red(pixel), Color.green(pixel), Color.blue(pixel))
-                if (luma > 8) conContenido++
-                if (luma > lumaMax) lumaMax = luma
+                onSample(maxOf(Color.red(pixel), Color.green(pixel), Color.blue(pixel)))
             }
         }
-        Log.d(TAG, "muestreo: $conContenido/100 pixeles con contenido, luma max=$lumaMax")
     }
 
     private fun currentDisplayMetrics(): DisplayMetrics {
@@ -270,6 +363,14 @@ class ScreenCaptureService : Service() {
         val thread = captureThread
         captureThread = null
         thread?.quitSafely()
+
+        mainHandler.removeCallbacks(startWindowSource)
+        val source = windowSource
+        windowSource = null
+        if (source != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            source.release()
+        }
+        SessionApps.clear()
 
         val window = overlay
         overlay = null
@@ -338,9 +439,44 @@ class ScreenCaptureService : Service() {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
 
-        /** Si hay una captura en curso, con su ventana estéreo. Solo se escribe desde el main thread. */
-        var isCapturing = false
+        /** Cuánto tiene que seguir oculta la tarea capturada para pasar a la captura por ventanas. */
+        private const val SOURCE_SWITCH_DELAY_MS = 150L
+
+        /**
+         * Frames enteramente negros seguidos, desde el arranque, que indican la pantalla completa. Con
+         * pantalla completa la ventana estéreo se redibuja en cada cuadro, así que se juntan en ~1,5 s;
+         * con una sola app los frames solo llegan cuando la pantalla cambia, y una transición en negro
+         * no llega a tantos.
+         */
+        private const val FULL_SCREEN_BLACK_FRAMES = 90
+
+        /** Hasta cuánto después del arranque se busca esa racha de frames negros. */
+        private const val FULL_SCREEN_CHECK_WINDOW_MS = 5000L
+
+        private val fullScreenRejectedState = MutableStateFlow(false)
+
+        /** Si la última captura se detuvo porque en el selector se eligió la pantalla completa. */
+        val fullScreenRejected: StateFlow<Boolean> = fullScreenRejectedState
+
+        private val capturingState = MutableStateFlow(false)
+
+        /** Si hay una captura en curso, con su ventana estéreo, como flujo observable. */
+        val capturing: StateFlow<Boolean> = capturingState
+
+        /**
+         * Si la tarea capturada está a la vista. Mientras no lo está, los frames de la proyección no
+         * llegan al visor: se queda con el último frame hasta que arranca la captura por ventanas.
+         */
+        @Volatile
+        var capturedTaskVisible = true
             private set
+
+        /** Si hay una captura en curso, con su ventana estéreo. Solo se escribe desde el main thread. */
+        var isCapturing: Boolean
+            get() = capturingState.value
+            private set(value) {
+                capturingState.value = value
+            }
 
         /** Intent que arranca la captura con el token devuelto por el diálogo de MediaProjection. */
         fun startIntent(context: Context, resultCode: Int, resultData: Intent): Intent =
