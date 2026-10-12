@@ -75,10 +75,39 @@ object JoystickManager {
             lastTickMs = now
             val ramp = ((now - moveStartMs) / ACCELERATION_MS).coerceAtMost(1f)
             val speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * ramp
-            cursorX = (cursorX + dx * speed * elapsedSeconds).coerceIn(0f, screenWidth.toFloat())
-            cursorY = (cursorY + dy * speed * elapsedSeconds).coerceIn(0f, screenHeight.toFloat())
+            moveCursorTo(cursorX + dx * speed * elapsedSeconds, cursorY + dy * speed * elapsedSeconds)
             handler.postDelayed(this, TICK_MS)
         }
+    }
+
+    /** Si el gatillo tiene apoyado el dedo simulado. */
+    private var pressing = false
+
+    /** Cursor apoyado sobre un borde de la pantalla. */
+    class EdgeContact(
+        /** Borde horizontal: -1 izquierdo, 0 ninguno, 1 derecho. */
+        val dirX: Int,
+        /** Borde vertical: -1 superior, 0 ninguno, 1 inferior. */
+        val dirY: Int,
+        /** Momento (uptime en ms) en que el cursor llegó al borde. */
+        val startMs: Long
+    ) {
+        /** Fracción (0..1) de la espera cumplida antes de que la pantalla empiece a avanzar. */
+        fun fill(nowMs: Long): Float = ((nowMs - startMs) / EDGE_DWELL_MS.toFloat()).coerceIn(0f, 1f)
+    }
+
+    /** Cuánto tiene que quedarse el cursor en un borde para que la pantalla empiece a avanzar. */
+    const val EDGE_DWELL_MS = 1000L
+
+    /** Borde sobre el que está el cursor, o null si no hay. Lo lee el hilo de render en cada cuadro. */
+    @Volatile
+    var edgeContact: EdgeContact? = null
+        private set
+
+    private val startEdgeScroll = Runnable {
+        val contact = edgeContact ?: return@Runnable
+        Log.d(TAG, "Avance automático hacia (${contact.dirX}, ${contact.dirY})")
+        accessibilityService?.startEdgeScroll(contact.dirX, contact.dirY)
     }
 
     private val serviceConnectedState = MutableStateFlow(false)
@@ -130,6 +159,7 @@ object JoystickManager {
         screenWidth = width
         screenHeight = height
         Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
+        refreshEdgeContact()
     }
     
     /**
@@ -153,6 +183,50 @@ object JoystickManager {
         updateMovement()
     }
 
+    /**
+     * Mueve el cursor a la posición pedida, limitada a la pantalla. Lo usa el stick y sirve igual para
+     * cualquier otra entrada: una posición pedida más allá de un borde deja el cursor sobre ese borde.
+     */
+    fun moveCursorTo(x: Float, y: Float) {
+        if (screenWidth == 0 || screenHeight == 0) return
+        cursorX = x.coerceIn(0f, screenWidth.toFloat())
+        cursorY = y.coerceIn(0f, screenHeight.toFloat())
+        refreshEdgeContact()
+    }
+
+    /**
+     * Vuelve a evaluar si el cursor está sobre un borde. Si se queda ahí [EDGE_DWELL_MS], la pantalla
+     * avanza hacia ese lado hasta que el cursor sale del borde. En una esquina gana el borde vertical.
+     * Con el gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura
+     * tampoco: no hay pantalla estéreo que mirar.
+     */
+    fun refreshEdgeContact() {
+        val enabled = !pressing && ScreenCaptureService.isCapturing &&
+            screenWidth != 0 && screenHeight != 0
+        val dirY = if (enabled) edgeDirection(cursorY, screenHeight) else 0
+        val dirX = if (enabled && dirY == 0) edgeDirection(cursorX, screenWidth) else 0
+        val current = edgeContact
+        if (current != null && current.dirX == dirX && current.dirY == dirY) return
+        if (current == null && dirX == 0 && dirY == 0) return
+
+        handler.removeCallbacks(startEdgeScroll)
+        if (current != null) accessibilityService?.stopEdgeScroll()
+        if (dirX == 0 && dirY == 0) {
+            edgeContact = null
+            Log.d(TAG, "Cursor fuera del borde")
+            return
+        }
+        edgeContact = EdgeContact(dirX, dirY, SystemClock.uptimeMillis())
+        Log.d(TAG, "Cursor en el borde ($dirX, $dirY)")
+        handler.postDelayed(startEdgeScroll, EDGE_DWELL_MS)
+    }
+
+    private fun edgeDirection(value: Float, size: Int): Int = when {
+        value <= 0f -> -1
+        value >= size -> 1
+        else -> 0
+    }
+
     private fun directionX(): Float =
         (stickX + (if (dpadRight) 1f else 0f) - (if (dpadLeft) 1f else 0f)).coerceIn(-1f, 1f)
 
@@ -172,12 +246,21 @@ object JoystickManager {
     }
     
     /**
-     * Solicita al servicio de accesibilidad que inyecte un evento táctil síncrono (tap)
-     * en la ubicación exacta donde se encuentra el cursor virtual en este momento.
+     * Apoya un dedo simulado donde está el cursor. El dedo lo sigue hasta [releasePress], así que
+     * sirve tanto para un tap como para un arrastre.
      */
-    fun performClick() {
-        Log.d(TAG, "Simulando Click en: ($cursorX, $cursorY)")
-        accessibilityService?.clickAt(cursorX, cursorY)
+    fun pressDown() {
+        Log.d(TAG, "Apoyando dedo en: ($cursorX, $cursorY)")
+        pressing = true
+        refreshEdgeContact()
+        accessibilityService?.pressAt(cursorX, cursorY)
+    }
+
+    /** Levanta el dedo apoyado con [pressDown], en la posición actual del cursor. */
+    fun releasePress() {
+        pressing = false
+        accessibilityService?.releasePress()
+        refreshEdgeContact()
     }
     
     /**
