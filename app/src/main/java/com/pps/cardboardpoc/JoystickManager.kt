@@ -177,15 +177,21 @@ object JoystickManager {
         refreshEdgeContact()
     }
 
+    private val refreshEdgeContactOnMain = Runnable { refreshEdgeContact() }
+
     /**
      * Registra el desplazamiento que aporta la cabeza, en píxeles desde la posición del joystick. Se
      * llama desde el hilo de render, una vez por cuadro.
      */
-    @Synchronized
     fun setHeadOffset(dx: Float, dy: Float) {
-        headOffsetX = dx
-        headOffsetY = dy
-        updateCursor()
+        synchronized(this) {
+            headOffsetX = dx
+            headOffsetY = dy
+            updateCursor()
+        }
+        // El avance por borde maneja gestos y vive en el hilo principal.
+        handler.removeCallbacks(refreshEdgeContactOnMain)
+        handler.post(refreshEdgeContactOnMain)
     }
 
     /**
@@ -197,16 +203,18 @@ object JoystickManager {
         private set
 
     /** Lleva el cursor al centro de la pantalla y descarta el desplazamiento del joystick y de la cabeza. */
-    @Synchronized
     fun recenter() {
-        if (screenWidth == 0 || screenHeight == 0) return
-        baseX = screenWidth / 2f
-        baseY = screenHeight / 2f
-        headOffsetX = 0f
-        headOffsetY = 0f
-        updateCursor()
-        recenterCount++
+        synchronized(this) {
+            if (screenWidth == 0 || screenHeight == 0) return
+            baseX = screenWidth / 2f
+            baseY = screenHeight / 2f
+            headOffsetX = 0f
+            headOffsetY = 0f
+            updateCursor()
+            recenterCount++
+        }
         Log.d(TAG, "Cursor centrado en ($cursorX, $cursorY)")
+        refreshEdgeContact()
     }
 
     /**
@@ -265,9 +273,12 @@ object JoystickManager {
      * cualquier otra entrada: una posición pedida más allá de un borde deja el cursor sobre ese borde.
      */
     fun moveCursorTo(x: Float, y: Float) {
-        if (screenWidth == 0 || screenHeight == 0) return
-        cursorX = x.coerceIn(0f, screenWidth.toFloat())
-        cursorY = y.coerceIn(0f, screenHeight.toFloat())
+        synchronized(this) {
+            if (screenWidth == 0 || screenHeight == 0) return
+            baseX = x.coerceIn(0f, screenWidth.toFloat()) - headOffsetX
+            baseY = y.coerceIn(0f, screenHeight.toFloat()) - headOffsetY
+            updateCursor()
+        }
         refreshEdgeContact()
     }
 

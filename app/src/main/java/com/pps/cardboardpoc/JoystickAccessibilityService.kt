@@ -85,7 +85,7 @@ class JoystickAccessibilityService : AccessibilityService() {
      * Punto de entrada crítico para la captura de eventos de botones físicos y joysticks.
      * Mapea códigos de tecla estándar de Android (KeyEvent) a las funciones lógicas del cursor.
      * En modo joystick el VR BOX manda el gatillo como BUTTON_L1, el botón A como BUTTON_B y el botón B
-     * como BUTTON_X.
+     * como BUTTON_X. El gatillo funciona como un dedo: apretarlo apoya el dedo y soltarlo lo levanta.
      */
     override fun onKeyEvent(event: KeyEvent): Boolean {
         Log.d(
