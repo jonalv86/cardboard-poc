@@ -12,6 +12,7 @@
 - [Fase 2 — Integración con Cardboard SDK](#fase-2)
 - [Fase 3 — Interacción con el control Bluetooth](#fase-3)
 - [E2-6 — El puntero con el giroscopio](#e2-6)
+- [Navegación entre apps](#navegacion)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -734,6 +735,126 @@ arrastre.
 
 ---
 
+<a id="navegacion"></a>
+## Navegación entre apps
+
+**Objetivo:** cambiar de app sin sacar el celular del visor. "Iniciar visor" abre un panel con todas
+las apps (las usadas en la sesión, primero); elegir una la abre en estéreo; el botón "Inicio" de la
+escena vuelve al panel, con la app abierta de fondo; la X termina.
+
+**Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16, One UI 8), visor y control VR BOX.
+
+### El problema de partida
+
+Con la captura de "una sola app", Android captura **la tarea** elegida: lo que se abre después en otra
+tarea no se ve. Para navegar hacía falta capturar la pantalla completa, y ahí nuestra propia ventana
+estéreo entra en la captura (espejo infinito, o negro con `FLAG_SECURE`). Android no ofrece una forma
+documentada de excluir una ventana propia, así que primero probamos alternativas, una por vez, cada una
+detrás de un interruptor y con log propio.
+
+| # | Qué se probó | Resultado |
+|---|---|---|
+| E1a | `createConfigForDefaultDisplay()` (Android 14+) para saltear el selector | Funciona: queda solo el diálogo de consentimiento. |
+| E1b | `FLAG_SECURE` en la ventana estéreo, con pantalla completa | Descartado: 98 de 100 puntos de la grilla en negro. |
+| E2 | ¿El selector de "una sola app" ofrece el launcher? | No. En One UI 8 lista las apps lanzables y el launcher no lo es. CardboardPOC sí aparece. |
+| E3 | Dibujar en la capa de overlays de accesibilidad (`attachAccessibilityOverlayToDisplay`) | Descartado: un cuadrado de prueba en esa capa llega rojo a la captura. Además se come los toques. |
+| E5 | Capturar CardboardPOC y abrir las apps **dentro de nuestra tarea** (sin `NEW_TASK`) | Fps completos, pero solo con algunas apps: las `singleTask`, `singleInstance` o que se relanzan solas se van a su tarea. |
+| E4 | `takeScreenshotOfWindow` (Android 14+) de cada ventana, sin MediaProjection | Captura cualquier app y no incluye nuestro overlay, pero el sistema limita a una captura cada 333 ms por ventana: ~2,8 fps y los videos no se actualizan. |
+| — | `createScreenCaptureIntent(LaunchCookie)`, que captura una tarea puntual | No se puede usar: es `@hide @TestApi`. |
+
+### La decisión: un camino híbrido
+
+Ninguna alternativa sola alcanzaba, así que se combinaron E5 y E4:
+
+- Se inicia con la captura de "una sola app" eligiendo **CardboardPOC**. Se abre el panel, que es una
+  actividad de nuestra tarea.
+- El panel abre cada app **sin `NEW_TASK`**. Si la app se queda en nuestra tarea (Cámara, Galería,
+  Calculadora, Mis archivos…), se ve por la proyección, a fps completos.
+- Si la app se va a su propia tarea (YouTube, Chrome, Maps, WhatsApp…), el sistema avisa que el
+  contenido capturado dejó de verse (`onCapturedContentVisibilityChanged(false)`). Si el aviso dura más
+  de **150 ms**, el visor pasa a la captura por ventanas, ~3 fps. Mientras tanto queda quieto el último
+  frame, que es lo que se ve como transición.
+- Al volver a nuestra tarea, la proyección retoma en el acto.
+
+**La fluidez depende de la app**, y la pantalla de inicio lo dice. Lo medido:
+
+- Del lanzamiento al primer frame por ventanas: entre 190 y 260 ms (Instagram, ~440 ms).
+- Los avisos de "dejó de verse" que el sistema revierte solo (al cerrar una actividad dentro de la
+  tarea, o con apps que se abren con una pantalla intermedia) duran entre 0 y 64 ms. Hubo 12 en una
+  sesión y ninguno cambió de fuente gracias a la espera de 150 ms.
+- Un video local de Galería, dentro de nuestra tarea, se ve fluido (la proyección entrega ~68 fps).
+
+### Lo que apareció al probar con apps reales
+
+1. **Instagram se cierra sola** si su actividad de inicio no es la raíz de la tarea (es un patrón
+   común). El panel lo detecta: si vuelve al frente en menos de 1,5 s sin haber quedado tapado, abre la
+   app de nuevo en una tarea propia y lo recuerda el resto de la sesión.
+2. **WhatsApp** declara un modo de lanzamiento normal, pero abre su pantalla principal en otra tarea:
+   la causa no siempre se ve en el manifest. Hay apps que se van "solas".
+3. **La captura por ventanas necesitaba vaciar una caché.** Sin suscribirse a eventos de accesibilidad,
+   `getWindows()` devuelve siempre las ventanas del arranque: se capturaba una ventana oculta y todo
+   salía negro. Se llama a `clearCache()` antes de cada pedido.
+4. **Apagar la pantalla corta la proyección** (Android 16) y termina la sesión. La ventana estéreo lleva
+   `FLAG_KEEP_SCREEN_ON`, así que ya no se apaga por inactividad (verificado: 5 min 23 s sin tocar el
+   control). Apretar el botón de encendido sigue terminándola.
+5. **Si en el selector se elige "Pantalla completa"**, la vista sale en negro. No hay forma pública de
+   sacar esa opción del selector ni de preseleccionar CardboardPOC (la API que lo permitiría en
+   Android 16 está detrás de un flag y no es pública). El visor lo detecta: 90 frames negros seguidos
+   en los primeros 5 s. En ese caso se cierra solo y la pantalla de inicio explica qué elegir.
+6. **Por debajo de Android 14** nada de esto existe, así que "Iniciar visor" queda deshabilitado con un
+   aviso.
+
+### El botón "Inicio"
+
+Va en una **franja debajo de la imagen**, en el espacio que ya quedaba vacío en cada ojo. El cursor
+puede bajar hasta ella:
+
+- El borde de abajo para el avance por borde es el de la franja: pasar de la imagen a la franja no
+  llena la flecha.
+- Con el gatillo apretado, el cursor no sale de la imagen, así un arrastre no se mete en la franja.
+- El gatillo en la franja nunca toca la app; sobre el botón vuelve al panel.
+
+### Apps verticales
+
+En vez de compensar la rotación en el render, la ventana estéreo **pide orientación horizontal**
+(`LayoutParams.screenOrientation`), y Android la respeta: la pantalla no rota durante el visor. Una
+app que pide vertical (Instagram, Frequency Generator) recibe toda la pantalla horizontal; no se
+muestra con bandas, como esperábamos, pero se vio bien y respondió al clic en los dos caminos. Como
+la pantalla no rota, el mapeo de clics y arrastre no cambió.
+
+### Un bug del clic que traía el giroscopio
+
+Con el visor puesto, **ningún clic terminaba**: el ícono quedaba "presionado". El log mostraba que el
+segundo tramo del gesto se cancelaba a los ~12 ms. La causa estaba en el código de Android
+(`GestureDescription`): cada punto del gesto se redondea a píxel entero, y un tramo que no cambia de
+píxel no genera ningún evento y se informa como cancelado. El temblor de la cabeza movía el cursor
+fracciones de píxel entre que se apoyaba el dedo y el tramo siguiente. Ahora `VirtualFinger` solo
+cuenta un movimiento si cambia el píxel. Sin cambiar nada del giroscopio, 26 toques de 26 terminaron
+bien y el arrastre sigue andando.
+
+### Limitaciones conocidas
+
+1. **En cada inicio hay que elegir "Una sola app" y después CardboardPOC.** No hay API pública para
+   evitarlo.
+2. **Las apps que se van a su propia tarea se ven a ~3 fps y sin video.**
+3. **Las apps verticales se ven ocupando toda la pantalla horizontal**, no con bandas.
+4. **El temblor del cursor con el giroscopio** sigue: el clic ya no falla, pero apuntar fino cuesta.
+5. **El botón de encendido termina la sesión.**
+6. **El cambio a la captura por ventanas tarda ~200 ms**, con la imagen quieta.
+
+Para probar sin el control hay un atajo, solo en compilaciones depurables:
+
+```
+adb shell am start -n com.pps.cardboardpoc/.MainActivity --activity-reorder-to-front --es abrir <paquete>
+adb shell am start -n com.pps.cardboardpoc/.MainActivity --activity-reorder-to-front --ez inicio true
+```
+
+**Resultado: hito cerrado.** Desde el visor se abre el panel, se elige una app, se vuelve con "Inicio"
+y se abre otra, sin sacar el celular. Verificado en el celular con Cámara, Galería (video local),
+Calculadora, Mis archivos, YouTube, Chrome, Maps, WhatsApp, Instagram y dos apps verticales.
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -830,6 +951,14 @@ celular. Lo que sirvió fue probar la combinación de las dos ramas **antes** de
 temporal, y después comparar el resultado del merge contra esa versión probada (`git diff
 <rama-probada> HEAD`): cualquier diferencia es algo que el merge decidió solo y hay que revisar.
 
+**11. Cuando el sistema cancela algo, leer su código antes de sospechar del nuestro.** *(Navegación)*
+
+El clic que no terminaba parecía culpa del bloqueo de orientación recién agregado, y se perdió tiempo
+probando sin él. Lo que lo resolvió fue leer `MotionEventInjector` y `GestureDescription` en las
+fuentes del SDK (`Sdk/sources/android-36`): las condiciones exactas de cancelación están ahí, y una de
+ellas (el redondeo a píxel entero) coincidía con lo que mostraba el log. Apagar una variable por vez
+(primero el bloqueo, después el giroscopio) confirmó cuál era.
+
 ---
 
 <a id="convenciones"></a>
@@ -857,18 +986,21 @@ temporal, y después comparar el resultado del merge contra esa versión probada
 - [x] Blindar la carrera que podía cerrar la captura al rotar (limitación 2 de la Fase 2).
 - [x] **E2-6 — puntero con el giroscopio.** La cabeza mueve el puntero junto con el joystick, y el
       botón B lo centra. Integrado con el arrastre y el avance por borde de `master`.
+- [x] **Navegación entre apps.** Panel de apps, botón "Inicio" en una franja de la escena, captura
+      híbrida (proyección + captura por ventanas) y orientación horizontal fija durante el visor.
+- [x] **Apps verticales:** la pantalla ya no rota durante el visor (ver "Navegación entre apps").
 
 **Lo que sigue ahora:**
 
-- [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`). Candidatos:
-      scroll o volver al inicio.
+- [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al
+      apretar el gatillo).
+- [ ] Que el botón de encendido no termine la sesión del visor.
+- [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`).
 - [ ] Que el servicio deje pasar las teclas del control cuando no hay captura, así el control se
       puede usar normalmente fuera del visor (limitación 6 de la Fase 3).
 
 **Diferido, con el criterio ya acordado:**
 
-- [ ] **Apps verticales:** mostrarlas corrigiendo el tamaño —aunque se vean más chicas— y volver
-      a corregir cuando se elija pantalla completa.
 - [ ] Afinar la óptica. Primero lo barato: ajustar con una regla las dos ruedas del VR BOX a lo
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.

@@ -2,6 +2,7 @@ package com.pps.cardboardpoc
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -177,6 +178,9 @@ class StereoOverlay(private val context: AccessibilityService) {
                 // completa. No lo excluye de la captura: lo pinta de negro, así que ese modo no sirve
                 // igual y el modo que funciona es "una sola app", donde el overlay no se captura.
                 WindowManager.LayoutParams.FLAG_SECURE or
+                // Con la pantalla apagada el sistema corta la proyección y la sesión del visor termina;
+                // dentro del visor nadie toca la pantalla, así que sin esto se apagaría por inactividad.
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             // OPAQUE evita que el compositor mezcle la ventana con las capas de abajo: se ve solo
@@ -184,6 +188,10 @@ class StereoOverlay(private val context: AccessibilityService) {
             PixelFormat.OPAQUE
         ).apply {
             alpha = 1f
+            // Dentro del visor el teléfono está siempre acostado, y el SDK parte la pantalla en dos
+            // ojos a lo ancho. Fijar la orientación desde esta ventana deja la pantalla horizontal
+            // aunque al frente haya una app vertical: el sistema la muestra centrada, con bandas.
+            screenOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             ignoreInsets()
         }
     }

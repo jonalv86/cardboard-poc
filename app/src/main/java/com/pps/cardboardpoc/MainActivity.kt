@@ -3,7 +3,9 @@ package com.pps.cardboardpoc
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -61,7 +63,10 @@ class MainActivity : ComponentActivity() {
             CardboardPOCTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
+                    val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
                     CaptureScreen(
+                        supported = isViewerSupported(),
+                        fullScreenRejected = fullScreenRejected,
                         serviceConnected = serviceConnected,
                         serviceEnabled = accessibilityEnabled.value,
                         onStartClick = { requestCapture() },
@@ -77,7 +82,29 @@ class MainActivity : ComponentActivity() {
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDebugCommand(intent)
+    }
+
+    /**
+     * Atajos para manejar el visor por adb en las pruebas, solo en compilaciones depurables y con el
+     * visor andando: [EXTRA_DEBUG_OPEN] abre una app desde el panel como si se la eligiera ahí, y
+     * [EXTRA_DEBUG_HOME] vuelve al panel como el botón "Inicio".
+     */
+    private fun handleDebugCommand(intent: Intent) {
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        if (!ScreenCaptureService.isCapturing) return
+        val packageToOpen = intent.getStringExtra(EXTRA_DEBUG_OPEN)
+        when {
+            packageToOpen != null -> PanelActivity.show(this, packageToOpen)
+            intent.getBooleanExtra(EXTRA_DEBUG_HOME, false) -> PanelActivity.show(this)
+        }
+    }
+
     private fun requestCapture() {
+        if (!isViewerSupported()) return
+
         // El servicio de accesibilidad es el dueño de la ventana estéreo y el que traduce el control,
         // y solo se puede activar a mano desde Ajustes.
         if (!JoystickManager.serviceConnected.value) {
@@ -106,10 +133,27 @@ class MainActivity : ComponentActivity() {
     private fun stopCapture() {
         stopService(Intent(this, ScreenCaptureService::class.java))
     }
+
+    private companion object {
+        /** Paquete de la app a abrir desde el panel (atajo de prueba por adb). */
+        const val EXTRA_DEBUG_OPEN = "abrir"
+
+        /** Con true vuelve al panel (atajo de prueba por adb). */
+        const val EXTRA_DEBUG_HOME = "inicio"
+    }
 }
+
+/**
+ * El visor necesita Android 14: la captura de una sola app, el aviso de que la app capturada dejó de
+ * verse y la captura por ventanas no existen antes, y la pantalla completa sale en negro.
+ */
+private fun isViewerSupported(): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
 @Composable
 fun CaptureScreen(
+    supported: Boolean,
+    fullScreenRejected: Boolean,
     serviceConnected: Boolean,
     serviceEnabled: Boolean,
     onStartClick: () -> Unit,
@@ -121,18 +165,26 @@ fun CaptureScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Button(onClick = onStartClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Iniciar captura de pantalla")
+        Button(onClick = onStartClick, enabled = supported, modifier = Modifier.fillMaxWidth()) {
+            Text("Iniciar visor")
         }
         OutlinedButton(onClick = onStopClick, modifier = Modifier.fillMaxWidth()) {
             Text("Detener captura")
         }
         Text(
             when {
+                !supported ->
+                    "El visor requiere Android 14 o superior (este equipo tiene Android " +
+                        "${Build.VERSION.RELEASE})."
+                serviceConnected && fullScreenRejected ->
+                    "Se eligió \"Pantalla completa\", que dentro del visor se ve en negro. Tocá " +
+                        "Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC."
                 serviceConnected ->
-                    "Tocá Iniciar y elegí \"Una sola app\": con \"Pantalla completa\" la vista estéreo " +
-                        "sale en negro. La vista se dibuja en una ventana flotante sobre esa app, así " +
-                        "que se sigue viendo cuando el sistema la trae al frente."
+                    "Tocá Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC: " +
+                        "se abre el panel de apps dentro del visor. La fluidez depende de cada app: " +
+                        "las que se abren dentro del visor se ven fluidas, y las que el sistema abre " +
+                        "aparte (Chrome, YouTube, Maps y otras) se ven a unos 3 cuadros por segundo " +
+                        "y sin video. El botón \"Inicio\", debajo de la imagen, vuelve al panel."
                 serviceEnabled ->
                     "El servicio \"Joystick Controller (CardboardPOC)\" figura activado pero no está " +
                         "corriendo (puede pasar después de reinstalar la app). Tocá Iniciar, buscalo " +
