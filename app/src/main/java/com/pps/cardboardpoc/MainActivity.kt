@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -69,8 +68,7 @@ class MainActivity : ComponentActivity() {
                         fullScreenRejected = fullScreenRejected,
                         serviceConnected = serviceConnected,
                         serviceEnabled = accessibilityEnabled.value,
-                        onStartClick = { requestCapture() },
-                        onStopClick = { stopCapture() }
+                        onStartClick = { requestCapture() }
                     )
                 }
             }
@@ -130,9 +128,6 @@ class MainActivity : ComponentActivity() {
         ) ?: return false
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == component }
     }
-    private fun stopCapture() {
-        stopService(Intent(this, ScreenCaptureService::class.java))
-    }
 
     private companion object {
         /** Paquete de la app a abrir desde el panel (atajo de prueba por adb). */
@@ -156,8 +151,7 @@ fun CaptureScreen(
     fullScreenRejected: Boolean,
     serviceConnected: Boolean,
     serviceEnabled: Boolean,
-    onStartClick: () -> Unit,
-    onStopClick: () -> Unit
+    onStartClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -167,9 +161,6 @@ fun CaptureScreen(
     ) {
         Button(onClick = onStartClick, enabled = supported, modifier = Modifier.fillMaxWidth()) {
             Text("Iniciar visor")
-        }
-        OutlinedButton(onClick = onStopClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Detener captura")
         }
         Text(
             when {
