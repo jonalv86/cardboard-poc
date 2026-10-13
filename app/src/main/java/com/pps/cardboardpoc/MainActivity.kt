@@ -184,7 +184,9 @@ fun CaptureScreen(
                         "se abre el panel de apps dentro del visor. La fluidez depende de cada app: " +
                         "las que se abren dentro del visor se ven fluidas, y las que el sistema abre " +
                         "aparte (Chrome, YouTube, Maps y otras) se ven a unos 3 cuadros por segundo " +
-                        "y sin video. El botón \"Inicio\", debajo de la imagen, vuelve al panel."
+                        "y sin video. El botón \"Inicio\", debajo de la imagen, vuelve al panel. " +
+                        "Si en vez de CardboardPOC elegís otra app (YouTube, un juego), el visor " +
+                        "la muestra directo y fluida, sin panel; las demás apps se ven lentas."
                 serviceEnabled ->
                     "El servicio \"Joystick Controller (CardboardPOC)\" figura activado pero no está " +
                         "corriendo (puede pasar después de reinstalar la app). Tocá Iniciar, buscalo " +

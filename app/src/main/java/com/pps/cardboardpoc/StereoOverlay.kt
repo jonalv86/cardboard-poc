@@ -36,6 +36,7 @@ class StereoOverlay(private val context: AccessibilityService) {
     private val renderer = CardboardOverlayRenderer(HeadPointer.createIfAvailable(context))
 
     private var cardboardView: CardboardView? = null
+    private var windowParams: WindowManager.LayoutParams? = null
     private var backHitArea: View? = null
 
     /** Agrega la ventana al WindowManager. No hace nada si ya está agregada. */
@@ -57,7 +58,21 @@ class StereoOverlay(private val context: AccessibilityService) {
 
         windowManager.addView(view, params)
         cardboardView = view
+        windowParams = params
         Log.d(TAG, "overlay agregado type=${params.type} flags=0x${params.flags.toString(16)}")
+    }
+
+    /**
+     * Quita FLAG_SECURE para que la ventana estéreo entre en capturas de pantalla, grabaciones y
+     * Smart View. Solo es seguro una vez descartado que la proyección propia sea de pantalla completa.
+     */
+    fun allowScreenCapture() {
+        val view = cardboardView ?: return
+        val params = windowParams ?: return
+        if (params.flags and WindowManager.LayoutParams.FLAG_SECURE == 0) return
+        params.flags = params.flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
+        windowManager.updateViewLayout(view, params)
+        Log.d(TAG, "overlay sin FLAG_SECURE flags=0x${params.flags.toString(16)}")
     }
 
     /** Publica un frame nuevo para los dos ojos. Se puede llamar desde cualquier hilo. */
@@ -70,6 +85,7 @@ class StereoOverlay(private val context: AccessibilityService) {
         val view = cardboardView ?: return
         cardboardView = null
 
+        windowParams = null
         view.onPause()
         removeWindow(view)
         backHitArea?.let { removeWindow(it) }
@@ -174,9 +190,9 @@ class StereoOverlay(private val context: AccessibilityService) {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                // FLAG_SECURE evita que el overlay se espeje dentro de sí mismo al compartir la pantalla
-                // completa. No lo excluye de la captura: lo pinta de negro, así que ese modo no sirve
-                // igual y el modo que funciona es "una sola app", donde el overlay no se captura.
+                // Si en el selector se eligió la pantalla completa, la proyección propia incluiría esta
+                // ventana y la espejaría dentro de sí misma. FLAG_SECURE la hace llegar en negro, que es
+                // lo que permite detectar esa elección; con "una sola app" no se captura y se quita.
                 WindowManager.LayoutParams.FLAG_SECURE or
                 // Con la pantalla apagada el sistema corta la proyección y la sesión del visor termina;
                 // dentro del visor nadie toca la pantalla, así que sin esto se apagaría por inactividad.

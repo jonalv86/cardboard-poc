@@ -1,6 +1,7 @@
 package com.pps.cardboardpoc
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -52,6 +53,14 @@ class ScreenCaptureService : Service() {
     private val startWindowSource = Runnable {
         Log.d(TAG, "fuente: ventanas")
         windowSource?.start()
+    }
+
+    /**
+     * Habilita las capturas del sistema sobre la ventana estéreo si vencido el plazo de
+     * [checkFullScreenChoice] no se detectó la pantalla completa: la captura es de una sola app.
+     */
+    private val allowScreenCapture = Runnable {
+        if (!fullScreenRejectedState.value) overlay?.allowScreenCapture()
     }
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -153,6 +162,7 @@ class ScreenCaptureService : Service() {
         blackStartupFrames = 0
         captureStartMs = SystemClock.uptimeMillis()
         fullScreenRejectedState.value = false
+        mainHandler.postDelayed(allowScreenCapture, FULL_SCREEN_CHECK_WINDOW_MS)
         isCapturing = true
         host.setCaptureActive(true)
 
@@ -163,8 +173,34 @@ class ScreenCaptureService : Service() {
         rebuildCapture()
         registerDisplayListener()
 
-        // Se elige CardboardPOC en el selector, así que la tarea capturada es la del panel.
-        PanelActivity.show(host)
+        mainHandler.post(decideStartScreen)
+    }
+
+    /**
+     * Abre el panel solo si en el selector se eligió CardboardPOC. Con otra app elegida, el panel la
+     * taparía y la dejaría fuera de la proyección. El selector corre dentro de nuestra tarea, así que
+     * al volver de él la tarea sigue a la vista hasta que termina la transición hacia la app elegida:
+     * solo cuenta que siga a la vista pasado [START_SCREEN_WAIT_MS].
+     */
+    private val decideStartScreen = object : Runnable {
+        override fun run() {
+            val waited = SystemClock.uptimeMillis() - captureStartMs
+            if (!isOwnTaskVisible()) {
+                Log.d(TAG, "se eligió otra app ($waited ms): se la ve directo, sin panel")
+                return
+            }
+            if (waited < START_SCREEN_WAIT_MS) {
+                mainHandler.postDelayed(this, START_SCREEN_POLL_MS)
+                return
+            }
+            Log.d(TAG, "se eligió CardboardPOC: se abre el panel")
+            JoystickManager.accessibilityService?.let { PanelActivity.show(it) }
+        }
+    }
+
+    private fun isOwnTaskVisible(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return getSystemService(ActivityManager::class.java).appTasks.any { it.taskInfo.isVisible }
     }
 
     /**
@@ -365,6 +401,8 @@ class ScreenCaptureService : Service() {
         thread?.quitSafely()
 
         mainHandler.removeCallbacks(startWindowSource)
+        mainHandler.removeCallbacks(allowScreenCapture)
+        mainHandler.removeCallbacks(decideStartScreen)
         val source = windowSource
         windowSource = null
         if (source != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -441,6 +479,12 @@ class ScreenCaptureService : Service() {
 
         /** Cuánto tiene que seguir oculta la tarea capturada para pasar a la captura por ventanas. */
         private const val SOURCE_SWITCH_DELAY_MS = 150L
+
+        /** Cuánto tiene que seguir a la vista nuestra tarea al arrancar para abrir el panel. */
+        private const val START_SCREEN_WAIT_MS = 1000L
+
+        /** Cada cuánto se mira, durante esa espera, si nuestra tarea dejó de verse. */
+        private const val START_SCREEN_POLL_MS = 50L
 
         /**
          * Frames enteramente negros seguidos, desde el arranque, que indican la pantalla completa. Con
