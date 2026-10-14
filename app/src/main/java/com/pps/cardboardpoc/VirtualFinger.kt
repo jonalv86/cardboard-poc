@@ -6,6 +6,7 @@ import android.accessibilityservice.GestureDescription.StrokeDescription
 import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PointF
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -136,7 +137,11 @@ class VirtualFinger(
         inFlight = true
         followSinceMs = SystemClock.uptimeMillis()
         segmentCount++
-        val gesture = GestureDescription.Builder().addStroke(next).build()
+        val builder = GestureDescription.Builder().addStroke(next)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setDisplayId(JoystickManager.targetDisplayId)
+        }
+        val gesture = builder.build()
         val accepted = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 inFlight = false

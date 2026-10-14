@@ -79,6 +79,43 @@ rompen. Las versiones fijadas hoy —Gradle 8.9, plugin 8.7.3— son las que est
 
 Para detener la captura, usá la notificación o el botón de la pantalla principal.
 
+### Videos y juegos fluidos (opcional, con Shizuku)
+
+**Shizuku es solo para que los videos y los juegos se vean fluidos.** Sin Shizuku el visor funciona
+igual, pero la mayoría de las apps de video y de juegos abiertas desde el panel se ven a unos 3 cuadros
+por segundo y sin video. Con Shizuku activo, todas se ven fluidas.
+
+**Qué es Shizuku:** [Shizuku](https://shizuku.rikka.app/) es una app gratuita que le presta a otras
+apps los permisos de la depuración de Android (los de adb), sin root ni computadora. CardboardPOC los
+usa para abrir las apps en una pantalla virtual propia y mostrarlas en el visor sin pasar por la
+captura de pantalla. El detalle de por qué hace falta está en la bitácora, en "Pantalla virtual con
+Shizuku".
+
+**Una sola vez por celular:**
+
+1. Instalar **Shizuku** desde Play Store.
+2. Activar las opciones de desarrollador: Ajustes > Acerca del teléfono > Información de software >
+   tocar 7 veces "Número de compilación".
+3. Conectar el celular a Wi-Fi.
+4. Abrir Shizuku y tocar "Emparejar" en la sección de depuración inalámbrica. Aceptar el permiso de
+   notificaciones.
+5. Ir a Ajustes > Opciones de desarrollador > Depuración inalámbrica, activarla y tocar "Vincular
+   dispositivo con código de vinculación".
+6. Escribir ese código en la notificación de Shizuku.
+7. La primera vez que el visor arranque con Shizuku, elegir "Permitir todo el tiempo" en "¿Permitir a
+   CardboardPOC acceder a Shizuku?".
+
+**Después de cada reinicio del celular, o si Shizuku se detuvo:**
+
+1. Conectar el celular a Wi-Fi.
+2. Abrir Shizuku y tocar "Iniciar". Tiene que decir que está en ejecución.
+3. Abrir CardboardPOC: el texto tiene que empezar con "Shizuku está activo".
+
+Con Shizuku activo, **Iniciar visor** abre el panel directo en el visor, sin elegir nada en el selector.
+El Wi-Fi solo hace falta para arrancar Shizuku: no necesita internet (sirve el hotspot de otro
+celular, no el del mismo), y una vez andando se puede cortar. Si Shizuku se detiene, el visor vuelve
+al modo de siempre. El video con DRM (Netflix y similares) sale negro igual.
+
 ### Recomendaciones para la prueba física
 
 - Brillo al máximo y brillo automático desactivado: dentro del visor se ve mucho más oscuro.

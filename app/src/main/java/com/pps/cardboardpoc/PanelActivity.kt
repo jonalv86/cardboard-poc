@@ -1,5 +1,6 @@
 package com.pps.cardboardpoc
 
+import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -7,6 +8,7 @@ import android.content.pm.ResolveInfo
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
@@ -209,16 +211,24 @@ class PanelActivity : ComponentActivity() {
          * NO_USER_ACTION evita que la app de adelante lo tome como que el usuario la deja y pase a
          * ventana flotante (YouTube lo hace): flotando sigue contando como visible, y si es la app
          * capturada el visor nunca pasaría a la captura por ventanas.
-         * Con [openPackage], el panel abre esa app al volver al frente.
+         * Con [openPackage], el panel abre esa app al volver al frente. Se abre en la pantalla destino
+         * de los toques, que con la pantalla virtual del visor no es la física.
          */
         fun show(context: Context, openPackage: String? = null) {
+            val displayId = JoystickManager.targetDisplayId
+            val options = if (displayId != Display.DEFAULT_DISPLAY) {
+                ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+            } else {
+                null
+            }
             context.startActivity(
                 Intent(context, PanelActivity::class.java)
                     .addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                             Intent.FLAG_ACTIVITY_NO_USER_ACTION
                     )
-                    .putExtra(EXTRA_OPEN_PACKAGE, openPackage)
+                    .putExtra(EXTRA_OPEN_PACKAGE, openPackage),
+                options
             )
         }
     }

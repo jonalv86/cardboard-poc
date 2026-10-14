@@ -4,10 +4,12 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.pps.cardboardpoc.ui.theme.CardboardPOCTheme
+import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
 
@@ -34,6 +37,29 @@ class MainActivity : ComponentActivity() {
 
     /** Si el servicio figura activado en Ajustes, aunque no esté corriendo. */
     private val accessibilityEnabled = mutableStateOf(false)
+
+    /** Si el servicio de Shizuku está corriendo; con él el visor usa la pantalla virtual. */
+    private val shizukuRunning = mutableStateOf(false)
+
+    /** App que abre el panel al arrancar el visor, a la espera del permiso de Shizuku. */
+    private var pendingOpenPackage: String? = null
+
+    private val shizukuReceived = Shizuku.OnBinderReceivedListener { shizukuRunning.value = true }
+    private val shizukuDead = Shizuku.OnBinderDeadListener { shizukuRunning.value = false }
+
+    private val shizukuPermissionResult =
+        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode != SHIZUKU_REQUEST_CODE) return@OnRequestPermissionResultListener
+            runOnUiThread {
+                if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                    startVirtualViewer(pendingOpenPackage)
+                } else {
+                    Log.w(TAG, "pantalla virtual: se negó el permiso de Shizuku, se usa la captura")
+                    launchProjection()
+                }
+                pendingOpenPackage = null
+            }
+        }
 
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -57,6 +83,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         mediaProjectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
+        Shizuku.addBinderDeadListener(shizukuDead)
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
 
         setContent {
             CardboardPOCTheme {
@@ -68,16 +97,26 @@ class MainActivity : ComponentActivity() {
                         fullScreenRejected = fullScreenRejected,
                         serviceConnected = serviceConnected,
                         serviceEnabled = accessibilityEnabled.value,
+                        shizukuRunning = shizukuRunning.value,
                         onStartClick = { requestCapture() }
                     )
                 }
             }
         }
+        handleDebugCommand(intent)
     }
 
     override fun onResume() {
         super.onResume()
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
+        shizukuRunning.value = Shizuku.pingBinder()
+    }
+
+    override fun onDestroy() {
+        Shizuku.removeBinderReceivedListener(shizukuReceived)
+        Shizuku.removeBinderDeadListener(shizukuDead)
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionResult)
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -88,10 +127,19 @@ class MainActivity : ComponentActivity() {
     /**
      * Atajos para manejar el visor por adb en las pruebas, solo en compilaciones depurables y con el
      * visor andando: [EXTRA_DEBUG_OPEN] abre una app desde el panel como si se la eligiera ahí, y
-     * [EXTRA_DEBUG_HOME] vuelve al panel como el botón "Inicio".
+     * [EXTRA_DEBUG_HOME] vuelve al panel como el botón "Inicio". [EXTRA_DEBUG_VIRTUAL] arranca el
+     * visor sobre la pantalla virtual de Shizuku, con [EXTRA_DEBUG_OPEN] opcional.
      */
     private fun handleDebugCommand(intent: Intent) {
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        if (intent.getBooleanExtra(EXTRA_DEBUG_VIRTUAL, false)) {
+            if (Shizuku.pingBinder()) {
+                startVirtualViewer(intent.getStringExtra(EXTRA_DEBUG_OPEN))
+            } else {
+                Log.w(TAG, "pantalla virtual: Shizuku no está corriendo")
+            }
+            return
+        }
         if (!ScreenCaptureService.isCapturing) return
         val packageToOpen = intent.getStringExtra(EXTRA_DEBUG_OPEN)
         when {
@@ -100,6 +148,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Arranca el visor sobre la pantalla virtual de Shizuku, que ya tiene que estar corriendo. Si falta
+     * el permiso de Shizuku lo pide, con su propio diálogo: al aceptarlo arranca, y al negarlo se usa
+     * la captura de pantalla.
+     */
+    private fun startVirtualViewer(openPackage: String?) {
+        if (ScreenCaptureService.isCapturing) return
+        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            pendingOpenPackage = openPackage
+            Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
+            return
+        }
+        ContextCompat.startForegroundService(
+            this, ScreenCaptureService.startVirtualIntent(this, openPackage)
+        )
+    }
+
+    /**
+     * Arranca el visor. Con Shizuku corriendo usa la pantalla virtual, donde toda app se ve a fps
+     * completos y no hace falta elegir nada; sin Shizuku, la captura de pantalla con su selector.
+     */
     private fun requestCapture() {
         if (!isViewerSupported()) return
 
@@ -110,6 +179,14 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        if (Shizuku.pingBinder()) {
+            startVirtualViewer(null)
+        } else {
+            launchProjection()
+        }
+    }
+
+    private fun launchProjection() {
         screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
     }
 
@@ -135,6 +212,12 @@ class MainActivity : ComponentActivity() {
 
         /** Con true vuelve al panel (atajo de prueba por adb). */
         const val EXTRA_DEBUG_HOME = "inicio"
+
+        /** Con true arranca el visor sobre la pantalla virtual de Shizuku (atajo de prueba por adb). */
+        const val EXTRA_DEBUG_VIRTUAL = "pantalla_virtual"
+
+        const val SHIZUKU_REQUEST_CODE = 1
+        const val TAG = "CardboardCapture"
     }
 }
 
@@ -151,6 +234,7 @@ fun CaptureScreen(
     fullScreenRejected: Boolean,
     serviceConnected: Boolean,
     serviceEnabled: Boolean,
+    shizukuRunning: Boolean,
     onStartClick: () -> Unit
 ) {
     Column(
@@ -167,6 +251,11 @@ fun CaptureScreen(
                 !supported ->
                     "El visor requiere Android 14 o superior (este equipo tiene Android " +
                         "${Build.VERSION.RELEASE})."
+                serviceConnected && shizukuRunning ->
+                    "Shizuku está activo: tocá Iniciar visor y se abre el panel de apps directo " +
+                        "en el visor, sin elegir nada. Todas las apps se ven fluidas, salvo el video " +
+                        "con DRM (Netflix y similares), que sale en negro. El botón \"Inicio\", " +
+                        "debajo de la imagen, vuelve al panel."
                 serviceConnected && fullScreenRejected ->
                     "Se eligió \"Pantalla completa\", que dentro del visor se ve en negro. Tocá " +
                         "Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC."

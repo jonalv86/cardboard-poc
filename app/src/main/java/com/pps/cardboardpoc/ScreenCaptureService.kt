@@ -29,6 +29,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -64,6 +65,10 @@ class ScreenCaptureService : Service() {
     }
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+
+    /** Si la sesión lee una pantalla virtual propia, vía Shizuku, en vez de la proyección. */
+    private var virtualMode = false
+    private var shizukuDisplay: ShizukuDisplay? = null
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var displayListener: DisplayManager.DisplayListener? = null
@@ -96,6 +101,13 @@ class ScreenCaptureService : Service() {
                     startForegroundAsProjection()
                     startCapture(resultCode, resultData)
                 }
+            }
+
+            ACTION_START_VIRTUAL -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+                startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
             }
 
             ACTION_STOP -> stopSelf()
@@ -177,6 +189,41 @@ class ScreenCaptureService : Service() {
     }
 
     /**
+     * Arranca el visor sobre una pantalla virtual propia: sin diálogo de captura ni selector, y toda
+     * app corre ahí a fps completos. El panel se abre en esa pantalla y, con [openPackage], abre esa app.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun startVirtual(openPackage: String?) {
+        if (isCapturing) return
+        val host = JoystickManager.accessibilityService
+        if (host == null || !ShizukuDisplay.isAvailable()) {
+            Log.w(TAG, "pantalla virtual: falta el servicio de accesibilidad o Shizuku con permiso")
+            stopSelf()
+            return
+        }
+
+        virtualMode = true
+        // La ventana estéreo nunca entra en lo que se lee de la pantalla virtual.
+        overlay = StereoOverlay(host).apply { show(); allowScreenCapture() }
+        capturedTaskVisible = true
+        fullScreenCheckDone = true
+        captureStartMs = SystemClock.uptimeMillis()
+        isCapturing = true
+        host.setCaptureActive(true)
+        captureThread = HandlerThread("CaptureThread").apply { start() }
+
+        rebuildCapture()
+        val display = shizukuDisplay
+        if (display == null) {
+            stopSelf()
+            return
+        }
+        JoystickManager.targetDisplayId = display.displayId
+        registerDisplayListener()
+        PanelActivity.show(host, openPackage)
+    }
+
+    /**
      * Abre el panel solo si en el selector se eligió CardboardPOC. Con otra app elegida, el panel la
      * taparía y la dejaría fuera de la proyección. El selector corre dentro de nuestra tarea, así que
      * al volver de él la tarea sigue a la vista hasta que termina la transición hacia la app elegida:
@@ -229,7 +276,8 @@ class ScreenCaptureService : Service() {
      * ese tamaño cambió. Corre siempre en el main thread.
      */
     private fun rebuildCapture() {
-        val projection = mediaProjection ?: return
+        val projection = mediaProjection
+        if (projection == null && !virtualMode) return
         val thread = captureThread ?: return
 
         val metrics = currentDisplayMetrics()
@@ -244,6 +292,7 @@ class ScreenCaptureService : Service() {
         // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
         // reader cerrado, la captura se corta.
         virtualDisplay?.setSurface(null)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) shizukuDisplay?.setSurface(null)
 
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         synchronized(captureLock) {
@@ -274,6 +323,13 @@ class ScreenCaptureService : Service() {
                 "pantalla real=${screen.widthPixels}x${screen.heightPixels} dpi=${screen.densityDpi}"
         )
 
+        if (projection == null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                updateShizukuDisplay(reader, width, height, metrics.densityDpi)
+            }
+            return
+        }
+
         val display = virtualDisplay
         if (display == null) {
             virtualDisplay = projection.createVirtualDisplay(
@@ -284,6 +340,23 @@ class ScreenCaptureService : Service() {
         } else {
             display.resize(width, height, metrics.densityDpi)
             display.setSurface(reader.surface)
+        }
+    }
+
+    /** Crea la pantalla virtual sobre [reader], o la reajusta al tamaño nuevo. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun updateShizukuDisplay(reader: ImageReader, width: Int, height: Int, densityDpi: Int) {
+        val display = shizukuDisplay
+        if (display != null) {
+            display.resize(width, height, densityDpi)
+            display.setSurface(reader.surface)
+            return
+        }
+        shizukuDisplay = try {
+            ShizukuDisplay.create(reader.surface, width, height, densityDpi)
+        } catch (e: Exception) {
+            Log.w(TAG, "pantalla virtual: no se pudo crear", e)
+            null
         }
     }
 
@@ -386,6 +459,18 @@ class ScreenCaptureService : Service() {
         virtualDisplay = null
         display?.release()
 
+        val ownDisplay = shizukuDisplay
+        shizukuDisplay = null
+        if (ownDisplay != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                ownDisplay.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "pantalla virtual: no se pudo liberar", e)
+            }
+        }
+        virtualMode = false
+        JoystickManager.targetDisplayId = Display.DEFAULT_DISPLAY
+
         synchronized(captureLock) {
             val reader = imageReader
             imageReader = null
@@ -474,6 +559,8 @@ class ScreenCaptureService : Service() {
         private const val CHANNEL_ID = "screen_capture_channel"
         private const val ACTION_START = "com.pps.cardboardpoc.action.START_CAPTURE"
         private const val ACTION_STOP = "com.pps.cardboardpoc.action.STOP_CAPTURE"
+        private const val ACTION_START_VIRTUAL = "com.pps.cardboardpoc.action.START_VIRTUAL"
+        private const val EXTRA_OPEN_PACKAGE = "open_package"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
 
@@ -528,6 +615,16 @@ class ScreenCaptureService : Service() {
                 action = ACTION_START
                 putExtra(EXTRA_RESULT_CODE, resultCode)
                 putExtra(EXTRA_RESULT_DATA, resultData)
+            }
+
+        /**
+         * Intent que arranca el visor sobre una pantalla virtual propia, vía Shizuku. Con
+         * [openPackage], el panel abre esa app apenas aparece.
+         */
+        fun startVirtualIntent(context: Context, openPackage: String?): Intent =
+            Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_START_VIRTUAL
+                putExtra(EXTRA_OPEN_PACKAGE, openPackage)
             }
 
         /** Intent que detiene la captura y baja el service. */
