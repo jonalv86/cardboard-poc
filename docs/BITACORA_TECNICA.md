@@ -14,6 +14,7 @@
 - [E2-6 — El puntero con el giroscopio](#e2-6)
 - [Navegación entre apps](#navegacion)
 - [Capturas de pantalla y elegir la app en el selector](#ajustes-visor)
+- [Pantalla virtual con Shizuku: todas las apps fluidas](#pantalla-virtual)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -934,16 +935,16 @@ Mis archivos, Cámara y Calculadora.
 Cualquier app elegida directamente en el selector se ve fluida (~30 fps en video de YouTube,
 ~56 fps en Clash of Clans).
 
-**Decisión:** por ahora no se cambia nada. Opciones abiertas para el panel: pedir permiso de
-nuevo al abrir una app lenta, investigar una pantalla virtual propia, o marcar en el panel las
-apps que se ven lentas. YouTube web en una pestaña del navegador dentro de nuestra tarea quedó sin probar.
+Esto se resolvió el mismo día con una pantalla virtual propia y Shizuku: ver
+["Pantalla virtual con Shizuku"](#pantalla-virtual). Sin Shizuku, el visor sigue funcionando como se
+describe acá.
 
 ### Limitaciones conocidas
 
 1. **Smart View y la grabación de pantalla no arrancan con el visor andando.**
 2. **Con CardboardPOC elegido, el panel tarda ~1 s en aparecer.**
-3. **Desde el panel, la mayoría de las apps de video y juegos se ven lentas.** Para verlas fluidas hay
-   que elegirlas directamente en el selector.
+3. **Sin Shizuku, desde el panel la mayoría de las apps de video y juegos se ven lentas.** Para verlas
+   fluidas hay que elegirlas directamente en el selector, o activar Shizuku.
 
 Para probar por adb sin que la app de adelante pase a ventana flotante, CardboardPOC se trae al frente
 con esa misma marca:
@@ -951,6 +952,162 @@ con esa misma marca:
 ```
 adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n com.pps.cardboardpoc/.MainActivity -f 0x10240000
 ```
+
+---
+
+<a id="pantalla-virtual"></a>
+## Pantalla virtual con Shizuku: todas las apps fluidas
+
+**Fecha:** 13 de octubre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16).
+
+### Por qué
+
+Desde el panel, 30 de 38 apps se veían a ~3 fps y sin video (ver "Fluidez de las apps abiertas desde
+el panel"). Eso deja afuera justo lo más vistoso para la demo: video y juegos. Elegir la app
+directamente en el selector la muestra fluida, pero sirve para esa sola app: para cambiar hay que
+sacar el celular del visor y volver a empezar.
+
+### Qué es Shizuku
+
+**adb** (*Android Debug Bridge*) es la herramienta de depuración de Android. Desde una computadora
+conectada al celular permite instalar apps, leer los logs y correr comandos con más permisos que los
+de una app común. Es lo que usamos todo el proyecto para probar.
+
+**[Shizuku](https://shizuku.rikka.app/)** es una app gratuita y de código abierto que usa la depuración
+inalámbrica de Android para arrancar, en el mismo celular, un servicio con esos permisos de adb. Las
+apps que el usuario autoriza le piden a ese servicio lo que una app común no puede hacer. No hace falta
+root ni computadora, pero el servicio se pierde cada vez que el celular se reinicia.
+
+### Por qué hace falta Shizuku
+
+La idea es abrir las apps en una **pantalla virtual propia**, una pantalla que existe solo en memoria,
+y leer sus frames directo. La ventana estéreo vive en la pantalla física, así que nunca entra en lo que
+se lee: no hay espejo infinito, no hace falta el diálogo de captura ni el selector, y no importa en qué
+tarea se abra cada app.
+
+Una app común no puede hacerlo. Android solo deja abrir apps ajenas en una pantalla virtual
+**"confiable"**, y crearla exige `ADD_TRUSTED_DISPLAY`, un permiso de sistema. En una pantalla no
+confiable, cada app tendría que declarar `allowEmbedded="true"` y quien la abre necesitaría
+`ACTIVITY_EMBEDDING`, otro permiso de sistema; YouTube, Netflix y los juegos no lo declaran. Está en
+`isCallerAllowedToLaunchOnDisplay`, en el código fuente de Android.
+
+Las otras salidas sin permisos especiales ya estaban medidas y no alcanzan: la captura por ventanas
+tiene el tope de una captura cada 333 ms, y pedir la captura de nuevo al abrir cada app obliga a sacar
+el celular del visor en cada cambio.
+
+Con los permisos de adb, en cambio, sí se puede: es lo que hace `scrcpy --new-display`.
+
+### Primero, una prueba con scrcpy
+
+Antes de escribir código se probó la idea con [scrcpy](https://github.com/Genymobile/scrcpy) 3.3.4, que
+desde la computadora crea una pantalla virtual confiable en el celular:
+
+| Prueba | Resultado |
+|---|---|
+| YouTube con un video | Pantalla completa, ~25 fps (la velocidad del video). |
+| Clash of Clans | ~57-60 fps. |
+| Netflix | Perfiles, menús y avance se ven bien; el capítulo con DRM sale negro (solo los subtítulos). |
+| Tocar con `adb shell input -d <id> tap` | Funciona sobre esa pantalla. |
+
+La pantalla física del celular siguió mostrando el inicio todo el tiempo.
+
+### Cómo quedó
+
+**"Iniciar visor" elige el camino solo:**
+
+- Si Shizuku está corriendo y CardboardPOC tiene su permiso, arranca sobre la pantalla virtual: se abre
+  el panel directo en el visor, sin diálogo ni selector.
+- Si Shizuku corre pero falta el permiso, lo pide (con el diálogo propio de Shizuku). Si se acepta,
+  arranca sobre la pantalla virtual; si se niega, sigue con la captura de siempre.
+- Si Shizuku no está corriendo, sigue con la captura de siempre.
+
+La pantalla de inicio cambia su texto cuando Shizuku está activo, así se puede confirmar antes de
+ponerse el visor.
+
+**Por dentro:**
+
+- `ShizukuDisplay` crea la pantalla con la interfaz oculta `IDisplayManager`, a través de
+  `ShizukuBinderWrapper`: el sistema ve la llamada como hecha por el usuario de adb (`shell`). Por eso el
+  nombre de paquete que se le pasa tiene que ser `com.android.shell`. El sistema pide un callback, que
+  usa como identificador de la pantalla: alcanza con el proxy de un `Binder` vacío. La interfaz oculta
+  se alcanza con la librería `hiddenapibypass`.
+- La pantalla lleva el flag `TRUSTED`, que es el que permite abrir apps ajenas. A propósito **no**
+  lleva decoraciones del sistema (así no aparece barra de navegación ni launcher: el panel hace de
+  inicio), ni gira con el contenido (una app vertical no la rota), ni destruye las apps al cerrarse
+  (pasan a la pantalla física). Los flags se tomaron de scrcpy.
+- Dibuja sobre el mismo `ImageReader` que usa la proyección, así que el resto del camino hasta el
+  visor no cambió.
+- El panel se abre en esa pantalla con `ActivityOptions.setLaunchDisplayId`, y las apps que abre el
+  panel caen solas en la misma pantalla, incluso las que se relanzan en una tarea propia.
+- Los gestos del control van a esa pantalla con `GestureDescription.Builder.setDisplayId`. Atrás no
+  necesitó cambios: el sistema lo manda a la pantalla con foco.
+- Sin MediaProjection el servicio no puede declararse en primer plano con el tipo `mediaProjection`, así
+  que en este modo usa `specialUse`.
+
+### Resultados
+
+| Prueba | Resultado |
+|---|---|
+| Clash of Clans abierto desde el panel | ~46 a ~62 fps, según la medición (antes ~3 fps). |
+| YouTube abierto desde el panel, con un video | ~25 fps, la velocidad del video (antes ~3 fps y sin video). |
+| Clic, arrastre, avance por borde, "Inicio" y Atrás | Llegan a la app correcta en la pantalla virtual. |
+| Cerrar con la X | La pantalla virtual se libera y las apps pasan a la pantalla física. |
+| Sin Shizuku | "Iniciar visor" funciona igual que antes, con el diálogo y el selector. |
+| Netflix con DRM | El video sale negro, igual que con la captura. |
+
+### Cómo activar Shizuku
+
+**Una sola vez por celular:**
+
+1. Instalar **Shizuku** desde Play Store.
+2. Activar las opciones de desarrollador: Ajustes > Acerca del teléfono > Información de software >
+   tocar 7 veces "Número de compilación".
+3. Conectar el celular a Wi-Fi.
+4. Abrir Shizuku y tocar "Emparejar" en la sección de depuración inalámbrica. Shizuku pide permiso para
+   mostrar notificaciones: aceptarlo.
+5. Ir a Ajustes > Opciones de desarrollador > Depuración inalámbrica, activarla y tocar "Vincular
+   dispositivo con código de vinculación".
+6. Escribir ese código en la notificación de Shizuku.
+7. La primera vez que el visor arranque con Shizuku, aparece "¿Permitir a CardboardPOC acceder a
+   Shizuku?": elegir "Permitir todo el tiempo".
+
+**Después de cada reinicio del celular, o si Shizuku se detuvo:**
+
+1. Conectar el celular a Wi-Fi.
+2. Abrir Shizuku y tocar "Iniciar". Tiene que decir que está en ejecución.
+3. Abrir CardboardPOC y confirmar que el texto empiece con "Shizuku está activo".
+
+**Con computadora:** con la depuración por USB activa y el celular conectado, Shizuku también se puede
+arrancar por adb. La primera línea devuelve la ruta de la app; la segunda usa esa carpeta, sin
+`/base.apk`, y tiene que terminar con `shizuku_starter exit with 0`:
+
+```
+adb shell pm path moe.shizuku.privileged.api
+adb shell <carpeta>/lib/arm64/libshizuku.so
+```
+
+Arrancado así, Shizuku se detiene si se corta la conexión de adb.
+
+### Limitaciones conocidas
+
+1. **Shizuku hay que reactivarlo después de cada reinicio**, y para arrancarlo hace falta una red Wi-Fi
+   (sin internet alcanza; sirve el hotspot de otro celular, no el del mismo). Una vez andando, cortar el
+   Wi-Fi no lo detiene (probado). Si se detiene, el visor vuelve al camino de siempre.
+2. **El video con DRM (Netflix y similares) sale negro**, igual que antes.
+3. **Usa interfaces ocultas de Android**, que pueden cambiar entre versiones. Probado solo en Android 16.
+4. **Al cerrar el visor, las apps que estaban abiertas aparecen en la pantalla física.**
+5. **Sin probar:** negar el permiso de Shizuku, que tendría que llevar a la captura de siempre.
+
+Para probar por adb sin tocar el botón (solo en compilaciones depurables), con `--es abrir <paquete>`
+opcional para que el panel abra esa app:
+
+```
+adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n com.pps.cardboardpoc/.MainActivity -f 0x10000000 --ez pantalla_virtual true
+```
+
+Para ver qué hay en la pantalla virtual: `adb shell dumpsys activity activities`, bajo
+`Display #<id>`. Para capturarla, `screencap -d` no acepta ese id sino el de SurfaceFlinger, que lista
+`adb shell dumpsys SurfaceFlinger --display-id`.
 
 ---
 
@@ -1097,6 +1254,7 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [x] **Apps verticales:** la pantalla ya no rota durante el visor (ver "Navegación entre apps").
 - [x] **Capturas de pantalla con el visor andando**, que destraban la evidencia visual para el informe.
 - [x] **Una app elegida en el selector se ve directo y fluida**, sin el panel encima.
+- [x] **Todas las apps fluidas desde el panel, con Shizuku activo** (pantalla virtual propia).
 
 **Lo que sigue ahora:**
 
@@ -1112,8 +1270,8 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [ ] Afinar la óptica. Primero lo barato: ajustar con una regla las dos ruedas del VR BOX a lo
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.
-- [ ] Que las apps abiertas desde el panel se vean fluidas (ver "Fluidez de las apps abiertas desde
-      el panel": por ahora no se hace nada).
+- [ ] Después de la demo, decidir si la pantalla virtual con Shizuku reemplaza a la captura o queda
+      como modo opcional, y si su configuración es aceptable para el uso real.
 
 **Del proyecto en general:**
 

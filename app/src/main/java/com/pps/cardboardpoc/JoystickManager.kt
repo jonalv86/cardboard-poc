@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.Display
 import android.view.KeyEvent
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +36,10 @@ object JoystickManager {
     @Volatile
     var screenHeight = 0
         private set
+
+    /** Pantalla donde caen los toques y donde se abre el panel: la física, o la virtual del visor. */
+    @Volatile
+    var targetDisplayId = Display.DEFAULT_DISPLAY
 
     /** Posición horizontal que aporta el joystick, en píxeles de pantalla. */
     private var baseX = 0f

@@ -58,6 +58,12 @@ dependencies {
     implementation(libs.play.services.vision)
     implementation(libs.protobuf.javalite)
 
+    // Pantalla virtual propia para el visor: Shizuku presta los permisos de adb para crearla como
+    // "confiable", y la interfaz del DisplayManager que lo permite es oculta.
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
+    implementation(libs.hiddenapibypass)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

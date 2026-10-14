@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- La sesión sobre pantalla virtual no usa MediaProjection y necesita otro tipo de servicio. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- El Cardboard SDK declara estos permisos para escanear el QR del visor y detectarlo por
          NFC. Sin perfil de visor el SDK usa los parámetros de Cardboard V1, así que nada de eso
@@ -50,8 +52,20 @@
             android:theme="@style/Theme.CardboardPOC" />
         <service
             android:name=".ScreenCaptureService"
-            android:foregroundServiceType="mediaProjection"
-            android:exported="false" />
+            android:foregroundServiceType="mediaProjection|specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Muestra en un visor de realidad virtual las apps abiertas en una pantalla virtual propia" />
+        </service>
+
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <service
             android:name=".JoystickAccessibilityService"
