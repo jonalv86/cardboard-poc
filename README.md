@@ -187,3 +187,9 @@ la alternativa sería que cada integrante instale el NDK y lo compile por su cue
 **Si alguna vez hay que actualizarlo, no alcanza con recompilar:** el build de Google tiene una
 falla que deja el `.aar` incompleto de una forma que no se nota hasta que la app se cierra en el
 celular. El parche necesario está explicado en la Fase 2 de la bitácora.
+
+## Íconos
+
+Los íconos de la barra del visor (`app/src/main/res/drawable/ic_*_rounded.xml`) son
+[Material Symbols](https://github.com/google/material-design-icons) estilo Rounded, de Google,
+licencia Apache 2.0.

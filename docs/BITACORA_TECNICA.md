@@ -15,6 +15,7 @@
 - [Navegación entre apps](#navegacion)
 - [Capturas de pantalla y elegir la app en el selector](#ajustes-visor)
 - [Pantalla virtual con Shizuku: todas las apps fluidas](#pantalla-virtual)
+- [Rediseño visual: retícula, bordes y barra flotante](#rediseno-visual)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -1108,6 +1109,53 @@ adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUN
 Para ver qué hay en la pantalla virtual: `adb shell dumpsys activity activities`, bajo
 `Display #<id>`. Para capturarla, `screencap -d` no acepta ese id sino el de SurfaceFlinger, que lista
 `adb shell dumpsys SurfaceFlinger --display-id`.
+
+---
+
+<a id="rediseno-visual"></a>
+## Rediseño visual: retícula, bordes y barra flotante
+
+Issue #17. Cambia cómo se ven el puntero, el avance por borde y el botón Inicio; los tiempos del input
+no cambian.
+
+### Qué umbral llena el anillo
+
+La app **no tiene un umbral propio** entre click y mantener click: el gatillo apoya un dedo real y la
+app de destino decide si fue tap, pulsación larga o arrastre. Por eso el anillo se llena con los mismos
+valores que usa esa app:
+
+- `ViewConfiguration.getLongPressTimeout()` para el tiempo (se lee al crear la superficie GL).
+- `scaledTouchSlop` para el arrastre: si el cursor se aleja más que eso de donde se apoyó el dedo, la
+  retícula pasa al estado de mantener antes de completar el llenado, porque la app ya lo tomó como
+  arrastre.
+
+El indicador de borde se llena con `EdgeContact.fill()`, que usa la misma espera que programa el
+arranque del avance. Las dos cosas las resuelve `ReticleState` (lógica pura, con tests en la JVM).
+
+### Cómo se dibuja
+
+- Todo es **forma por shader** (distancias con signo) salvo los íconos, que son vectores de Material
+  Symbols Rounded rasterizados una vez a textura. No hay desenfoque de fondo: se renderiza dos veces por
+  cuadro y es caro.
+- La UI es translúcida, así que hay **blending** con colores premultiplicados (`GL_ONE`,
+  `GL_ONE_MINUS_SRC_ALPHA`). Se prende solo para la UI y se apaga al terminar cada ojo, para no dejarle
+  el estado cambiado a la pasada de distorsión del SDK.
+- Las transiciones (retícula ↔ chevron, color de mantener, brillo, atenuación de la barra) se animan
+  en `onNewFrame` con el tiempo real entre cuadros; los dos ojos dibujan el mismo estado.
+- Tamaño y colores de la retícula salen de `ReticleStyle`, pensado para que lo escriba la pantalla de
+  ajustes.
+
+### La barra flotante reemplaza a la franja
+
+La barra es una píldora encima de la imagen (`ControlBar`), así que el cursor ya no baja de la imagen:
+
+- El borde de abajo para el avance es otra vez el de la pantalla, y pasa por debajo de la píldora.
+- El gatillo sobre la píldora no toca la app: sobre un botón ejecuta su acción y en el resto no hace
+  nada. Lo que la píldora tapa no se puede tocar mientras esté ahí.
+- Se atenúa con el cursor lejos y vuelve a opacidad completa al acercarse.
+
+No se detecta si lo que está bajo el puntero es clickeable: requiere leer el árbol de accesibilidad de
+la app capturada y se descartó.
 
 ---
 
