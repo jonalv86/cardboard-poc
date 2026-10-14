@@ -13,6 +13,7 @@
 - [Fase 3 — Interacción con el control Bluetooth](#fase-3)
 - [E2-6 — El puntero con el giroscopio](#e2-6)
 - [Navegación entre apps](#navegacion)
+- [Capturas de pantalla y elegir la app en el selector](#ajustes-visor)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -855,6 +856,104 @@ Calculadora, Mis archivos, YouTube, Chrome, Maps, WhatsApp, Instagram y dos apps
 
 ---
 
+<a id="ajustes-visor"></a>
+## Capturas de pantalla y elegir la app en el selector
+
+**Fecha:** 13 de octubre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16).
+
+Una tanda de arreglos chicos que salieron de usar el visor: no se podían sacar capturas de pantalla,
+y algunas apps que antes se veían fluidas (YouTube, Clash of Clans) ahora se veían lentas.
+
+### Las capturas de pantalla salían bloqueadas
+
+La ventana estéreo tenía `FLAG_SECURE`, la marca que le dice a Android "esta ventana no se puede
+capturar". Estaba por una sola razón: si en el selector alguien elige "Pantalla completa", nuestra
+propia captura incluiría la ventana estéreo y se vería a sí misma, como dos espejos enfrentados. Con
+la marca, la ventana sale en negro, y el visor usa ese negro para darse cuenta, cortar y explicar qué
+elegir.
+
+Ese chequeo solo mira los primeros 5 segundos. Pasado ese tiempo sin detectar "Pantalla completa", la
+captura es de una sola app y la ventana estéreo ya no puede entrar en ella. Ahora la marca **se quita a
+los 5 segundos**. Resultado:
+
+- **Captura de pantalla del sistema:** funciona, sale la vista estéreo completa y sin espejo. Esto
+  destraba la evidencia visual para el informe.
+- **Smart View y la grabadora de Samsung:** no arrancan mientras el visor está andando. Lo más probable
+  es que el sistema no deje compartir la pantalla dos veces a la vez; los logs no dejaron rastro, así que
+  no está confirmado.
+
+### Elegir otra app en el selector: directo y fluido
+
+El selector de "Una sola app" muestra **arriba las apps recientes** y abajo la lista completa. Si se
+toca una reciente (por ejemplo YouTube o Clash of Clans), la captura es de esa app, no de CardboardPOC.
+Eso no es un error: así la app se ve a fps completos. El problema era que el visor abría el panel
+encima apenas arrancaba; el panel tapaba la app elegida y todo pasaba a la captura por ventanas, a
+~3 fps.
+
+Ahora el visor abre el panel **solo si se eligió CardboardPOC**. Para saberlo mira si la tarea de
+CardboardPOC sigue a la vista. No puede mirarlo apenas vuelve del selector, porque el selector corre
+dentro de nuestra propia tarea y en ese instante figura visible igual; espera hasta 1 segundo (en las
+pruebas, la app elegida tardó 0,5 a 0,7 s en pasar al frente).
+
+| Prueba | Resultado |
+|---|---|
+| Elegir Clash of Clans en el selector | Se ve directo, sin panel, a ~56 fps. |
+| Elegir YouTube en el selector | Se ve directo, sin panel; el video a ~30 fps. |
+| "Inicio" con la app elegida al frente | Abre el panel, que se ve por la captura por ventanas (lento). |
+| Volver a la app elegida desde el panel | La proyección retoma a fps completos. |
+| Elegir CardboardPOC | Igual que antes: el panel abre (ahora ~1 s después). Galería con video a ~60 fps. |
+
+La pantalla de inicio de la app ahora lo explica.
+
+### YouTube dejaba el visor congelado
+
+Con YouTube al frente, tocar "Inicio" hacía que YouTube pasara a **ventana flotante**
+(picture-in-picture), porque lo tomaba como que el usuario se iba. Flotando, el sistema la sigue
+contando como visible, así que el visor nunca pasaba a la captura por ventanas y se quedaba con la
+última imagen. Mientras tanto el panel estaba abierto debajo, sin verse, y un clic terminó abriendo
+otra app.
+
+Se arregló abriendo el panel con `FLAG_ACTIVITY_NO_USER_ACTION`, que le avisa a la app de adelante que
+no es el usuario el que se va: YouTube queda en segundo plano en pantalla completa, sin flotar.
+
+### Fluidez de las apps abiertas desde el panel
+
+Se abrieron 38 apps desde el panel y se miró si el visor pasaba a la captura por ventanas.
+30 de 38 se van a su propia tarea y se ven a ~3 fps:
+
+- Video y música: Netflix, Disney+, Prime Video, Max, Crunchyroll, DAZN, Pluto, Twitch, YouTube,
+  Google TV, YouTube Music, Spotify.
+- Navegadores: Chrome, Samsung Internet.
+- Juegos: Clash of Clans, Clash Royale, Brawl Stars, Gardenscapes, Tetris, Pinball, Shell Racing.
+- Mapas y mensajería: Maps, Waze, Flightradar, Windy, WhatsApp, Telegram.
+- Instagram, Pinterest y Tumblr se cierran solas y el panel las reabre en una tarea propia.
+
+Se quedan en nuestra tarea y se ven fluidas: Facebook, X, Stellarium, Google Fotos, Galería,
+Mis archivos, Cámara y Calculadora.
+
+Cualquier app elegida directamente en el selector se ve fluida (~30 fps en video de YouTube,
+~56 fps en Clash of Clans).
+
+**Decisión:** por ahora no se cambia nada. Opciones abiertas para el panel: pedir permiso de
+nuevo al abrir una app lenta, investigar una pantalla virtual propia, o marcar en el panel las
+apps que se ven lentas. YouTube web en una pestaña del navegador dentro de nuestra tarea quedó sin probar.
+
+### Limitaciones conocidas
+
+1. **Smart View y la grabación de pantalla no arrancan con el visor andando.**
+2. **Con CardboardPOC elegido, el panel tarda ~1 s en aparecer.**
+3. **Desde el panel, la mayoría de las apps de video y juegos se ven lentas.** Para verlas fluidas hay
+   que elegirlas directamente en el selector.
+
+Para probar por adb sin que la app de adelante pase a ventana flotante, CardboardPOC se trae al frente
+con esa misma marca:
+
+```
+adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n com.pps.cardboardpoc/.MainActivity -f 0x10240000
+```
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -959,6 +1058,13 @@ fuentes del SDK (`Sdk/sources/android-36`): las condiciones exactas de cancelaci
 ellas (el redondeo a píxel entero) coincidía con lo que mostraba el log. Apagar una variable por vez
 (primero el bloqueo, después el giroscopio) confirmó cuál era.
 
+**12. Antes de buscar un bug, confirmar qué eligió el usuario.** *(Capturas y selector)*
+
+Varias sesiones arrancaban lentas desde el primer segundo y la primera sospecha fue que la tarea de la
+app estaba "sucia" de pruebas anteriores. Era falso: en el selector se había tocado una app reciente,
+no CardboardPOC. El log del sistema lo dice sin vueltas: la línea `findTaskToMoveToFront` muestra qué
+tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMoveToFront`).
+
 ---
 
 <a id="convenciones"></a>
@@ -989,6 +1095,8 @@ ellas (el redondeo a píxel entero) coincidía con lo que mostraba el log. Apaga
 - [x] **Navegación entre apps.** Panel de apps, botón "Inicio" en una franja de la escena, captura
       híbrida (proyección + captura por ventanas) y orientación horizontal fija durante el visor.
 - [x] **Apps verticales:** la pantalla ya no rota durante el visor (ver "Navegación entre apps").
+- [x] **Capturas de pantalla con el visor andando**, que destraban la evidencia visual para el informe.
+- [x] **Una app elegida en el selector se ve directo y fluida**, sin el panel encima.
 
 **Lo que sigue ahora:**
 
@@ -1004,8 +1112,8 @@ ellas (el redondeo a píxel entero) coincidía con lo que mostraba el log. Apaga
 - [ ] Afinar la óptica. Primero lo barato: ajustar con una regla las dos ruedas del VR BOX a lo
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.
-- [ ] Resolver cómo sacar evidencia visual para el informe, hoy bloqueada por la protección de
-      captura de la propia app.
+- [ ] Que las apps abiertas desde el panel se vean fluidas (ver "Fluidez de las apps abiertas desde
+      el panel": por ahora no se hace nada).
 
 **Del proyecto en general:**
 

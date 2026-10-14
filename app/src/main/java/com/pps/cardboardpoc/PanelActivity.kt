@@ -206,12 +206,18 @@ class PanelActivity : ComponentActivity() {
         /**
          * Trae el panel al frente desde cualquier contexto. Con NEW_TASK el sistema usa la tarea de
          * CardboardPOC si ya existe, y REORDER_TO_FRONT sube el panel dentro de ella sin crear otro.
+         * NO_USER_ACTION evita que la app de adelante lo tome como que el usuario la deja y pase a
+         * ventana flotante (YouTube lo hace): flotando sigue contando como visible, y si es la app
+         * capturada el visor nunca pasaría a la captura por ventanas.
          * Con [openPackage], el panel abre esa app al volver al frente.
          */
         fun show(context: Context, openPackage: String? = null) {
             context.startActivity(
                 Intent(context, PanelActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                    )
                     .putExtra(EXTRA_OPEN_PACKAGE, openPackage)
             )
         }
