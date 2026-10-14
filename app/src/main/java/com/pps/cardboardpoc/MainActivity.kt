@@ -254,8 +254,8 @@ fun CaptureScreen(
                 serviceConnected && shizukuRunning ->
                     "Shizuku está activo: tocá Iniciar visor y se abre el panel de apps directo " +
                         "en el visor, sin elegir nada. Todas las apps se ven fluidas, salvo el video " +
-                        "con DRM (Netflix y similares), que sale en negro. El botón \"Inicio\", " +
-                        "debajo de la imagen, vuelve al panel."
+                        "con DRM (Netflix y similares), que sale en negro. El botón de apps de la " +
+                        "barra de abajo vuelve al panel."
                 serviceConnected && fullScreenRejected ->
                     "Se eligió \"Pantalla completa\", que dentro del visor se ve en negro. Tocá " +
                         "Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC."
@@ -264,7 +264,7 @@ fun CaptureScreen(
                         "se abre el panel de apps dentro del visor. La fluidez depende de cada app: " +
                         "las que se abren dentro del visor se ven fluidas, y las que el sistema abre " +
                         "aparte (Chrome, YouTube, Maps y otras) se ven a unos 3 cuadros por segundo " +
-                        "y sin video. El botón \"Inicio\", debajo de la imagen, vuelve al panel. " +
+                        "y sin video. El botón de apps de la barra de abajo vuelve al panel. " +
                         "Si en vez de CardboardPOC elegís otra app (YouTube, un juego), el visor " +
                         "la muestra directo y fluida, sin panel; las demás apps se ven lentas."
                 serviceEnabled ->

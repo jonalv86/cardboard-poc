@@ -101,6 +101,29 @@ object JoystickManager {
     /** Si el gatillo tiene apoyado el dedo simulado. */
     private var pressing = false
 
+    /** Dedo simulado apoyado con el gatillo. */
+    class Press(
+        /** Momento (uptime en ms) en que se apoyó el dedo. */
+        val startMs: Long,
+        /** Posición horizontal donde se apoyó, en píxeles de pantalla. */
+        val originX: Float,
+        /** Posición vertical donde se apoyó, en píxeles de pantalla. */
+        val originY: Float
+    )
+
+    /** Dedo apoyado con el gatillo, o null si no hay. Lo lee el hilo de render en cada cuadro. */
+    @Volatile
+    var press: Press? = null
+        private set
+
+    /**
+     * Si la [ControlBar] está a la vista. Se actualiza con cada movimiento del cursor según
+     * [ControlBar.nextVisible]; con el dedo apoyado se oculta, así un arrastre no la hace aparecer.
+     */
+    @Volatile
+    var controlBarVisible = false
+        private set
+
     /** Cursor apoyado sobre un borde de la pantalla. */
     class EdgeContact(
         /** Borde horizontal: -1 izquierdo, 0 ninguno, 1 derecho. */
@@ -110,7 +133,10 @@ object JoystickManager {
         /** Momento (uptime en ms) en que el cursor llegó al borde. */
         val startMs: Long
     ) {
-        /** Fracción (0..1) de la espera cumplida antes de que la pantalla empiece a avanzar. */
+        /**
+         * Fracción (0..1) de la espera cumplida antes de que la pantalla empiece a avanzar. Llega a 1
+         * cuando arranca el avance, porque el arranque se programa con la misma espera.
+         */
         fun fill(nowMs: Long): Float = ((nowMs - startMs) / EDGE_DWELL_MS.toFloat()).coerceIn(0f, 1f)
     }
 
@@ -229,17 +255,9 @@ object JoystickManager {
     @Synchronized
     private fun moveBase(stepX: Float, stepY: Float) {
         baseX = limitStep(baseX, stepX, headOffsetX, screenWidth.toFloat())
-        baseY = limitStep(baseY, stepY, headOffsetY, maxCursorY())
+        baseY = limitStep(baseY, stepY, headOffsetY, screenHeight.toFloat())
         updateCursor()
     }
-
-    /**
-     * Límite inferior del cursor: el borde de abajo de la franja de "Inicio", que no es parte de la
-     * pantalla capturada. Con el gatillo apretado es el borde de la pantalla, así un arrastre no se
-     * sale de la app.
-     */
-    private fun maxCursorY(): Float =
-        screenHeight + if (pressing) 0f else HomeStrip.HEIGHT_PX
 
     /**
      * Aplica un paso del joystick sobre un eje. Si la cabeza ya lleva el cursor más allá del borde,
@@ -257,7 +275,9 @@ object JoystickManager {
     private fun updateCursor() {
         if (screenWidth == 0 || screenHeight == 0) return
         cursorX = (baseX + headOffsetX).coerceIn(0f, screenWidth.toFloat())
-        cursorY = (baseY + headOffsetY).coerceIn(0f, maxCursorY())
+        cursorY = (baseY + headOffsetY).coerceIn(0f, screenHeight.toFloat())
+        controlBarVisible = !pressing &&
+            ControlBar.nextVisible(controlBarVisible, cursorX, cursorY, screenWidth, screenHeight)
     }
 
     /**
@@ -289,7 +309,7 @@ object JoystickManager {
         synchronized(this) {
             if (screenWidth == 0 || screenHeight == 0) return
             baseX = x.coerceIn(0f, screenWidth.toFloat()) - headOffsetX
-            baseY = y.coerceIn(0f, maxCursorY()) - headOffsetY
+            baseY = y.coerceIn(0f, screenHeight.toFloat()) - headOffsetY
             updateCursor()
         }
         refreshEdgeContact()
@@ -299,16 +319,13 @@ object JoystickManager {
      * Vuelve a evaluar si el cursor está sobre un borde. Si se queda ahí [EDGE_DWELL_MS], la pantalla
      * avanza hacia ese lado hasta que el cursor sale del borde. En una esquina gana el borde vertical.
      * Con el gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura
-     * tampoco: no hay pantalla estéreo que mirar. El borde de abajo es el de la franja de "Inicio", así
-     * que pasar de la imagen a la franja no cuenta como borde, y dentro de la franja los costados
-     * tampoco: no son parte de la app.
+     * tampoco: no hay pantalla estéreo que mirar.
      */
     fun refreshEdgeContact() {
         val enabled = !pressing && ScreenCaptureService.isCapturing &&
             screenWidth != 0 && screenHeight != 0
-        val dirY = if (enabled) edgeDirection(cursorY, maxCursorY()) else 0
-        val inStrip = HomeStrip.contains(cursorY, screenHeight)
-        val dirX = if (enabled && dirY == 0 && !inStrip) {
+        val dirY = if (enabled) edgeDirection(cursorY, screenHeight.toFloat()) else 0
+        val dirX = if (enabled && dirY == 0) {
             edgeDirection(cursorX, screenWidth.toFloat())
         } else {
             0
@@ -355,24 +372,35 @@ object JoystickManager {
     
     /**
      * Apoya un dedo simulado donde está el cursor. El dedo lo sigue hasta [releasePress], así que
-     * sirve tanto para un tap como para un arrastre. En la franja de "Inicio" no apoya nada: sobre el
-     * botón vuelve al panel, y en el resto de la franja no hace nada.
+     * sirve tanto para un tap como para un arrastre. Sobre la [ControlBar] visible no apoya nada:
+     * ejecuta el botón que esté bajo el cursor, y en el resto de la píldora no hace nada.
      */
     fun pressDown() {
-        if (HomeStrip.contains(cursorY, screenHeight)) {
-            if (HomeStrip.isOnButton(cursorX, cursorY, screenWidth, screenHeight)) showPanel()
-            else Log.d(TAG, "Gatillo en la franja, fuera del botón: no se toca la app")
+        if (controlBarVisible && ScreenCaptureService.isCapturing &&
+            ControlBar.contains(cursorX, cursorY, screenWidth, screenHeight)
+        ) {
+            when (ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)) {
+                ControlBar.Button.HOME -> showPanel()
+                null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
+            }
             return
         }
         Log.d(TAG, "Apoyando dedo en: ($cursorX, $cursorY)")
-        pressing = true
+        // updateCursor corre también en el hilo de render y decide la visibilidad de la barra con
+        // pressing.
+        synchronized(this) {
+            pressing = true
+            controlBarVisible = false
+        }
+        press = Press(SystemClock.uptimeMillis(), cursorX, cursorY)
         refreshEdgeContact()
         accessibilityService?.pressAt(cursorX, cursorY)
     }
 
     /** Levanta el dedo apoyado con [pressDown], en la posición actual del cursor. */
     fun releasePress() {
-        pressing = false
+        synchronized(this) { pressing = false }
+        press = null
         accessibilityService?.releasePress()
         refreshEdgeContact()
     }
