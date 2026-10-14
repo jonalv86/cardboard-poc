@@ -95,7 +95,7 @@ class CardboardOverlayRenderer(
     private var hold = 0f
     private var pulse = 0f
     private var glow = 0f
-    private var barAlpha = BAR_DIMMED_ALPHA
+    private var barReveal = 0f
     private var hoveredButton = -1
 
     /** Último borde tocado; se conserva para animar la salida después de dejarlo. */
@@ -357,14 +357,20 @@ class CardboardOverlayRenderer(
         drawUiQuad(glowUi)
     }
 
-    /** Dibuja la píldora de la barra con sus botones, encima de la imagen capturada. */
+    /**
+     * Dibuja la píldora de la barra con sus botones, encima de la imagen capturada. Al aparecer sube
+     * desde el borde de abajo mientras se hace opaca; el recorrido es el margen inferior, así no se
+     * sale de la imagen.
+     */
     private fun drawControlBar(space: ScreenSpace) {
         val shapeUi = shapeProgram ?: return
+        if (barReveal < 0.01f) return
         val bar = ControlBar.bounds(screenWidth, screenHeight)
+        val centerY = bar.centerY + (1f - barReveal) * ControlBar.BOTTOM_MARGIN_PX
         drawRoundedBox(
-            shapeUi, space, bar.centerX, bar.centerY, bar.width / 2f, bar.height / 2f,
-            fillAlpha = BAR_FILL_ALPHA * barAlpha, fillWhite = false,
-            borderAlpha = BAR_BORDER_ALPHA * barAlpha
+            shapeUi, space, bar.centerX, centerY, bar.width / 2f, bar.height / 2f,
+            fillAlpha = BAR_FILL_ALPHA * barReveal, fillWhite = false,
+            borderAlpha = BAR_BORDER_ALPHA * barReveal
         )
 
         val radius = ControlBar.BUTTON_DIAMETER_PX / 2f
@@ -373,8 +379,8 @@ class CardboardOverlayRenderer(
             val centerX = ControlBar.buttonCenterX(index, screenWidth, screenHeight)
             if (index == hoveredButton) {
                 drawRoundedBox(
-                    shapeUi, space, centerX, bar.centerY, radius, radius,
-                    fillAlpha = BUTTON_HOVER_ALPHA * barAlpha, fillWhite = true, borderAlpha = 0f
+                    shapeUi, space, centerX, centerY, radius, radius,
+                    fillAlpha = BUTTON_HOVER_ALPHA * barReveal, fillWhite = true, borderAlpha = 0f
                 )
             }
             val icon = iconTextureIds.getOrElse(index) { 0 }
@@ -384,8 +390,8 @@ class CardboardOverlayRenderer(
                     space.width(iconHalf),
                     space.height(iconHalf),
                     space.x(centerX),
-                    space.y(bar.centerY),
-                    barAlpha
+                    space.y(centerY),
+                    barReveal
                 )
             }
         }
@@ -512,10 +518,10 @@ class CardboardOverlayRenderer(
             edgeDirY = 0
         }
 
-        val proximity = ControlBar.proximity(cursorX, cursorY, screenWidth, screenHeight)
-        val targetBarAlpha = BAR_DIMMED_ALPHA + (1f - BAR_DIMMED_ALPHA) * proximity
-        barAlpha += (targetBarAlpha - barAlpha) * step
-        val hovered = ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)
+        val barVisible = JoystickManager.controlBarVisible
+        barReveal += ((if (barVisible) 1f else 0f) - barReveal) * step
+        val hovered =
+            if (barVisible) ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight) else null
         hoveredButton = if (hovered == null) -1 else ControlBar.buttons.indexOf(hovered)
     }
 
@@ -662,8 +668,6 @@ class CardboardOverlayRenderer(
         /** Medio lado del ícono respecto del radio del botón. */
         const val ICON_SIZE_FRACTION = 0.5f
 
-        /** Opacidad de la barra con el cursor lejos; cerca llega a 1. */
-        const val BAR_DIMMED_ALPHA = 0.35f
         const val BAR_FILL_ALPHA = 0.55f
         const val BAR_BORDER_ALPHA = 0.28f
         const val BAR_BORDER_PX = 2f

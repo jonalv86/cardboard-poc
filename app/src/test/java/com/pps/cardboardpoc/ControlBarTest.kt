@@ -37,13 +37,29 @@ class ControlBarTest {
     }
 
     @Test
-    fun `la cercania va de uno junto a la barra a cero lejos`() {
-        assertEquals(1f, ControlBar.proximity(bounds.centerX, bounds.centerY, WIDTH, HEIGHT), 0f)
-        val near = bounds.top - ControlBar.NEAR_DISTANCE_PX
-        assertEquals(1f, ControlBar.proximity(bounds.centerX, near, WIDTH, HEIGHT), 0.001f)
-        val middle = bounds.top - (ControlBar.NEAR_DISTANCE_PX + ControlBar.FAR_DISTANCE_PX) / 2f
-        assertEquals(0.5f, ControlBar.proximity(bounds.centerX, middle, WIDTH, HEIGHT), 0.001f)
-        assertEquals(0f, ControlBar.proximity(bounds.centerX, 0f, WIDTH, HEIGHT), 0f)
+    fun `oculta no aparece al pasar por encima de la pildora`() {
+        assertFalse(ControlBar.nextVisible(false, bounds.centerX, bounds.centerY, WIDTH, HEIGHT))
+    }
+
+    @Test
+    fun `aparece en la zona del borde de abajo en cualquier lugar`() {
+        val y = HEIGHT - ControlBar.REVEAL_ZONE_PX
+        assertTrue(ControlBar.nextVisible(false, 0f, y, WIDTH, HEIGHT))
+        assertTrue(ControlBar.nextVisible(false, bounds.centerX, HEIGHT.toFloat(), WIDTH, HEIGHT))
+    }
+
+    @Test
+    fun `visible no se oculta al subir hasta los botones`() {
+        assertTrue(ControlBar.nextVisible(true, bounds.centerX, bounds.centerY, WIDTH, HEIGHT))
+        val justAbove = bounds.top - ControlBar.KEEP_MARGIN_PX
+        assertTrue(ControlBar.nextVisible(true, bounds.centerX, justAbove, WIDTH, HEIGHT))
+    }
+
+    @Test
+    fun `visible se oculta al alejarse de la pildora`() {
+        val above = bounds.top - ControlBar.KEEP_MARGIN_PX - 1f
+        assertFalse(ControlBar.nextVisible(true, bounds.centerX, above, WIDTH, HEIGHT))
+        assertFalse(ControlBar.nextVisible(true, 0f, bounds.centerY, WIDTH, HEIGHT))
     }
 
     private companion object {

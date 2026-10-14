@@ -4,8 +4,10 @@ import kotlin.math.hypot
 
 /**
  * Barra de controles flotante: una píldora centrada abajo, encima de la imagen capturada, con un botón
- * circular por cada entrada de [buttons]. Lo que cae sobre la píldora no llega a la app capturada. Las
- * medidas están en píxeles de la pantalla capturada, las mismas unidades que el cursor.
+ * circular por cada entrada de [buttons]. Está oculta hasta que el cursor llega al borde de abajo, así
+ * no tapa lo que la app tenga detrás. Mientras está a la vista, lo que cae sobre la píldora no llega a
+ * la app capturada. Las medidas están en píxeles de la pantalla capturada, las mismas unidades que el
+ * cursor.
  */
 object ControlBar {
 
@@ -27,11 +29,11 @@ object ControlBar {
     /** Distancia entre la píldora y el borde de abajo de la pantalla. */
     const val BOTTOM_MARGIN_PX = 40f
 
-    /** Distancia al cursor hasta la que la barra se ve con opacidad completa. */
-    const val NEAR_DISTANCE_PX = 80f
+    /** Alto de la zona pegada al borde de abajo en la que aparece la barra. */
+    const val REVEAL_ZONE_PX = 48f
 
-    /** Distancia al cursor desde la que la barra queda atenuada del todo. */
-    const val FAR_DISTANCE_PX = 400f
+    /** Margen alrededor de la píldora dentro del cual la barra, ya visible, no se oculta. */
+    const val KEEP_MARGIN_PX = 24f
 
     /** Rectángulo en píxeles de pantalla. */
     data class Box(val left: Float, val top: Float, val right: Float, val bottom: Float) {
@@ -77,12 +79,19 @@ object ControlBar {
     }
 
     /**
-     * Cercanía del punto a la píldora: 1 dentro de [NEAR_DISTANCE_PX], 0 más allá de
-     * [FAR_DISTANCE_PX] y una rampa lineal entre las dos.
+     * Si la barra queda a la vista con el cursor en el punto, sabiendo si ya lo estaba. Aparece en la
+     * zona de [REVEAL_ZONE_PX] junto al borde de abajo, y una vez visible se queda mientras el cursor
+     * siga sobre la píldora o a menos de [KEEP_MARGIN_PX] de ella: así se puede subir hasta los botones
+     * sin que se esconda.
      */
-    fun proximity(x: Float, y: Float, screenWidth: Int, screenHeight: Int): Float {
-        val distance = bounds(screenWidth, screenHeight).distanceTo(x, y)
-        return (1f - (distance - NEAR_DISTANCE_PX) / (FAR_DISTANCE_PX - NEAR_DISTANCE_PX))
-            .coerceIn(0f, 1f)
+    fun nextVisible(
+        visible: Boolean,
+        x: Float,
+        y: Float,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Boolean {
+        if (y >= screenHeight - REVEAL_ZONE_PX) return true
+        return visible && bounds(screenWidth, screenHeight).distanceTo(x, y) <= KEEP_MARGIN_PX
     }
 }

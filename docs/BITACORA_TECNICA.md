@@ -1140,7 +1140,7 @@ arranque del avance. Las dos cosas las resuelve `ReticleState` (lógica pura, co
 - La UI es translúcida, así que hay **blending** con colores premultiplicados (`GL_ONE`,
   `GL_ONE_MINUS_SRC_ALPHA`). Se prende solo para la UI y se apaga al terminar cada ojo, para no dejarle
   el estado cambiado a la pasada de distorsión del SDK.
-- Las transiciones (retícula ↔ chevron, color de mantener, brillo, atenuación de la barra) se animan
+- Las transiciones (retícula ↔ chevron, color de mantener, brillo, entrada y salida de la barra) se animan
   en `onNewFrame` con el tiempo real entre cuadros; los dos ojos dibujan el mismo estado.
 - Tamaño y colores de la retícula salen de `ReticleStyle`, pensado para que lo escriba la pantalla de
   ajustes.
@@ -1149,10 +1149,16 @@ arranque del avance. Las dos cosas las resuelve `ReticleState` (lógica pura, co
 
 La barra es una píldora encima de la imagen (`ControlBar`), así que el cursor ya no baja de la imagen:
 
-- El borde de abajo para el avance es otra vez el de la pantalla, y pasa por debajo de la píldora.
-- El gatillo sobre la píldora no toca la app: sobre un botón ejecuta su acción y en el resto no hace
-  nada. Lo que la píldora tapa no se puede tocar mientras esté ahí.
-- Se atenúa con el cursor lejos y vuelve a opacidad completa al acercarse.
+- **Está oculta hasta que el cursor llega al borde de abajo** (los últimos 48 px). La primera versión
+  estaba siempre a la vista y se atenuaba con el cursor lejos, pero tapaba botones de las apps que
+  quedaban justo detrás.
+- Una vez visible, subir hasta los botones no la esconde: se queda mientras el cursor esté sobre la
+  píldora o a menos de 24 px. Al alejarse, se oculta.
+- Si el cursor sigue hacia abajo, el avance por borde funciona igual que antes: el borde de abajo es
+  el de la pantalla.
+- Con el gatillo apretado no aparece, así un arrastre hacia abajo no la hace salir.
+- El gatillo sobre la píldora visible no toca la app: sobre un botón ejecuta su acción y en el resto
+  no hace nada. Oculta, lo que tiene detrás se toca normalmente.
 
 No se detecta si lo que está bajo el puntero es clickeable: requiere leer el árbol de accesibilidad de
 la app capturada y se descartó.

@@ -116,6 +116,14 @@ object JoystickManager {
     var press: Press? = null
         private set
 
+    /**
+     * Si la [ControlBar] está a la vista. Se actualiza con cada movimiento del cursor según
+     * [ControlBar.nextVisible]; con el dedo apoyado se oculta, así un arrastre no la hace aparecer.
+     */
+    @Volatile
+    var controlBarVisible = false
+        private set
+
     /** Cursor apoyado sobre un borde de la pantalla. */
     class EdgeContact(
         /** Borde horizontal: -1 izquierdo, 0 ninguno, 1 derecho. */
@@ -268,6 +276,8 @@ object JoystickManager {
         if (screenWidth == 0 || screenHeight == 0) return
         cursorX = (baseX + headOffsetX).coerceIn(0f, screenWidth.toFloat())
         cursorY = (baseY + headOffsetY).coerceIn(0f, screenHeight.toFloat())
+        controlBarVisible = !pressing &&
+            ControlBar.nextVisible(controlBarVisible, cursorX, cursorY, screenWidth, screenHeight)
     }
 
     /**
@@ -362,11 +372,11 @@ object JoystickManager {
     
     /**
      * Apoya un dedo simulado donde está el cursor. El dedo lo sigue hasta [releasePress], así que
-     * sirve tanto para un tap como para un arrastre. Sobre la [ControlBar] no apoya nada: ejecuta el
-     * botón que esté bajo el cursor, y en el resto de la píldora no hace nada.
+     * sirve tanto para un tap como para un arrastre. Sobre la [ControlBar] visible no apoya nada:
+     * ejecuta el botón que esté bajo el cursor, y en el resto de la píldora no hace nada.
      */
     fun pressDown() {
-        if (ScreenCaptureService.isCapturing &&
+        if (controlBarVisible && ScreenCaptureService.isCapturing &&
             ControlBar.contains(cursorX, cursorY, screenWidth, screenHeight)
         ) {
             when (ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)) {
@@ -376,7 +386,12 @@ object JoystickManager {
             return
         }
         Log.d(TAG, "Apoyando dedo en: ($cursorX, $cursorY)")
-        pressing = true
+        // updateCursor corre también en el hilo de render y decide la visibilidad de la barra con
+        // pressing.
+        synchronized(this) {
+            pressing = true
+            controlBarVisible = false
+        }
         press = Press(SystemClock.uptimeMillis(), cursorX, cursorY)
         refreshEdgeContact()
         accessibilityService?.pressAt(cursorX, cursorY)
@@ -384,7 +399,7 @@ object JoystickManager {
 
     /** Levanta el dedo apoyado con [pressDown], en la posición actual del cursor. */
     fun releasePress() {
-        pressing = false
+        synchronized(this) { pressing = false }
         press = null
         accessibilityService?.releasePress()
         refreshEdgeContact()
