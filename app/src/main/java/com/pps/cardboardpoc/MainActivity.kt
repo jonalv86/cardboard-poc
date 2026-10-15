@@ -13,19 +13,48 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.pps.cardboardpoc.ui.theme.CardboardPOCTheme
@@ -88,7 +117,9 @@ class MainActivity : ComponentActivity() {
         Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
 
         setContent {
-            CardboardPOCTheme {
+            val systemInDark = isSystemInDarkTheme()
+            var isDarkTheme by remember { mutableStateOf(systemInDark) }
+            CardboardPOCTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
                     val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
@@ -98,7 +129,9 @@ class MainActivity : ComponentActivity() {
                         serviceConnected = serviceConnected,
                         serviceEnabled = accessibilityEnabled.value,
                         shizukuRunning = shizukuRunning.value,
-                        onStartClick = { requestCapture() }
+                        onStartClick = { requestCapture() },
+                        isDarkTheme = isDarkTheme,
+                        onToggleDarkMode = { isDarkTheme = !isDarkTheme }
                     )
                 }
             }
@@ -235,53 +268,398 @@ fun CaptureScreen(
     serviceConnected: Boolean,
     serviceEnabled: Boolean,
     shizukuRunning: Boolean,
-    onStartClick: () -> Unit
+    onStartClick: () -> Unit,
+    isDarkTheme: Boolean = false,
+    onToggleDarkMode: () -> Unit = {}
 ) {
+    var showInfoDialog by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Button(onClick = onStartClick, enabled = supported, modifier = Modifier.fillMaxWidth()) {
-            Text("Iniciar visor")
-        }
-        Text(
-            when {
-                !supported ->
-                    "El visor requiere Android 14 o superior (este equipo tiene Android " +
-                        "${Build.VERSION.RELEASE})."
-                serviceConnected && shizukuRunning ->
-                    "Shizuku está activo: tocá Iniciar visor y se abre el panel de apps directo " +
-                        "en el visor, sin elegir nada. Todas las apps se ven fluidas, salvo el video " +
-                        "con DRM (Netflix y similares), que sale en negro. El botón de apps de la " +
-                        "barra de abajo vuelve al panel."
-                serviceConnected && fullScreenRejected ->
-                    "Se eligió \"Pantalla completa\", que dentro del visor se ve en negro. Tocá " +
-                        "Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC."
-                serviceConnected ->
-                    "Tocá Iniciar visor, elegí \"Una sola app\" y en la lista elegí CardboardPOC: " +
-                        "se abre el panel de apps dentro del visor. La fluidez depende de cada app: " +
-                        "las que se abren dentro del visor se ven fluidas, y las que el sistema abre " +
-                        "aparte (Chrome, YouTube, Maps y otras) se ven a unos 3 cuadros por segundo " +
-                        "y sin video. El botón de apps de la barra de abajo vuelve al panel. " +
-                        "Si en vez de CardboardPOC elegís otra app (YouTube, un juego), el visor " +
-                        "la muestra directo y fluida, sin panel; las demás apps se ven lentas."
-                serviceEnabled ->
-                    "El servicio \"Joystick Controller (CardboardPOC)\" figura activado pero no está " +
-                        "corriendo (puede pasar después de reinstalar la app). Tocá Iniciar, buscalo " +
-                        "en la lista (en Samsung, dentro de \"Apps instaladas\"), apagalo y volvé a " +
-                        "prenderlo."
-                else ->
-                    "Falta activar el servicio de accesibilidad \"Joystick Controller " +
-                        "(CardboardPOC)\": dibuja la vista estéreo y traduce el control. Tocá Iniciar, " +
-                        "buscalo en la lista (en Samsung, dentro de \"Apps instaladas\") y activalo."
+        // Top Bar: Futuristic Header + Action Icons side-by-side (ONLY icons)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_vr_headset_desktop),
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp),
+                    tint = Color.Unspecified
+                )
+                Text(
+                    text = "CARDBOARD",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
             }
-        )
-        Text(
-            "Control VR BOX: tiene que estar en modo joystick. Stick = mover el cursor, " +
-                "gatillo = tocar, botón A = atrás. En modo mouse el sistema dibuja su propio " +
-                "puntero, que no se ve en estéreo."
-        )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onToggleDarkMode) {
+                    Text(
+                        text = if (isDarkTheme) "☀️" else "🌙",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+                IconButton(onClick = { showInfoDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = "Información",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        // Status HUD Chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatusChip(
+                label = if (supported) "Android 14+" else "Req. Android 14",
+                active = supported,
+                modifier = Modifier.weight(1f)
+            )
+            StatusChip(
+                label = if (serviceConnected) "Joystick OK" else "Sin Accesibilidad",
+                active = serviceConnected,
+                modifier = Modifier.weight(1f)
+            )
+            StatusChip(
+                label = if (shizukuRunning) "Shizuku VR" else "Captura App",
+                active = shizukuRunning,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        // Hero Action Button
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Button(
+                onClick = onStartClick,
+                enabled = supported,
+                modifier = Modifier
+                    .defaultMinSize(minWidth = 180.dp, minHeight = 48.dp)
+            ) {
+                Text(
+                    text = "INICIAR",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // Guide / Instruction HUD Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "ESTADO DEL SISTEMA VR",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = when {
+                        !supported ->
+                            "El visor requiere Android 14 o superior (este equipo tiene Android ${Build.VERSION.RELEASE})."
+                        serviceConnected && shizukuRunning ->
+                            "Shizuku activo: Iniciar abre el panel de apps directo en el visor con máxima fluidez y rendimiento estéreo."
+                        serviceConnected && fullScreenRejected ->
+                            "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná CardboardPOC."
+                        serviceConnected ->
+                            "Tocá Iniciar, elegí \"Una sola app\" y seleccioná CardboardPOC para abrir el panel inmersivo en el visor."
+                        serviceEnabled ->
+                            "El servicio de accesibilidad está activado pero detenido. Apágalo y vuelve a encenderlo en Ajustes."
+                        else ->
+                            "Falta activar el servicio de accesibilidad \"Joystick Controller (CardboardPOC)\" para dibujar la vista estéreo."
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        // VR Box Controller HUD Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "CONTROL VR BOX (Modo Joystick)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                Text("• Stick: Mover cursor en estéreo", style = MaterialTheme.typography.bodySmall)
+                Text("• Gatillo: Tocar / Seleccionar", style = MaterialTheme.typography.bodySmall)
+                Text("• Botón A: Volver / Atrás", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+
+    if (showInfoDialog) {
+        AboutScreen(onBack = { showInfoDialog = false })
     }
 }
+
+@Composable
+fun StatusChip(label: String, active: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+    ) {
+        Box(
+            modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer
+            )
+        }
+    }
+}
+
+@Composable
+fun AboutScreen(onBack: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Top Bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Volver"
+                    )
+                }
+                Text(
+                    text = "Acerca de",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Scrollable Content
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // App Icon
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_vr_headset_desktop),
+                    contentDescription = "Icono de la aplicación",
+                    modifier = Modifier.size(88.dp),
+                    tint = Color.Unspecified
+                )
+
+                // App Name & Version
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "CardboardPOC",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Versión 1.0",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                // Developers Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "DESARROLLADORES",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Jonatan Alvarez", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("Lucas Llanos", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("Fabián Mamani", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    }
+                }
+
+                // Subject Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "MATERIA",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Práctica Profesional Supervisada",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Institution Card with Logo
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_university),
+                            contentDescription = "Logo Institución UNGS",
+                            modifier = Modifier.size(44.dp),
+                            tint = Color.Unspecified
+                        )
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "INSTITUCIÓN",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Universidad Nacional de General Sarmiento - UNGS",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun CaptureScreenPreview() {
+    CardboardPOCTheme {
+        Surface {
+            CaptureScreen(
+                supported = true,
+                fullScreenRejected = false,
+                serviceConnected = true,
+                serviceEnabled = true,
+                shizukuRunning = false,
+                onStartClick = {}
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun CaptureScreenDarkPreview() {
+    CardboardPOCTheme(darkTheme = true) {
+        Surface {
+            CaptureScreen(
+                supported = true,
+                fullScreenRejected = false,
+                serviceConnected = true,
+                serviceEnabled = true,
+                shizukuRunning = false,
+                onStartClick = {},
+                isDarkTheme = true
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun AboutScreenPreview() {
+    CardboardPOCTheme {
+        AboutScreen(onBack = {})
+    }
+}
+
+
+
+
