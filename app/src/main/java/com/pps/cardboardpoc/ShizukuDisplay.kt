@@ -61,7 +61,7 @@ class ShizukuDisplay private constructor(
         /** El servicio de Shizuku corre como el usuario shell, y el sistema exige su paquete. */
         private const val SHELL_PACKAGE = "com.android.shell"
 
-        /** Si Shizuku está corriendo y CardboardPOC tiene su permiso. */
+        /** Si Shizuku está corriendo y CeluVR tiene su permiso. */
         fun isAvailable(): Boolean =
             Shizuku.pingBinder() &&
                 Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
@@ -84,7 +84,7 @@ class ShizukuDisplay private constructor(
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
                 FLAG_SUPPORTS_TOUCH or FLAG_TRUSTED or FLAG_OWN_DISPLAY_GROUP or
                 FLAG_ALWAYS_UNLOCKED or FLAG_TOUCH_FEEDBACK_DISABLED
-            val config = VirtualDisplayConfig.Builder("CardboardPOC", width, height, densityDpi)
+            val config = VirtualDisplayConfig.Builder("CeluVR", width, height, densityDpi)
                 .setFlags(flags)
                 .setSurface(surface)
                 .build()

@@ -45,14 +45,14 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
-import com.pps.cardboardpoc.ui.theme.CardboardPOCTheme
+import com.pps.cardboardpoc.ui.theme.CeluVRTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
  * Panel de apps del visor: lista todas las apps lanzables, con las usadas en la sesión primero. Vive
- * en la tarea de CardboardPOC y abre cada app sin FLAG_ACTIVITY_NEW_TASK, así que las que lo permiten
+ * en la tarea de CeluVR y abre cada app sin FLAG_ACTIVITY_NEW_TASK, así que las que lo permiten
  * quedan dentro de esa tarea, que es la que captura la proyección. Las que se van a una tarea propia
  * se siguen viendo, más lentas, con la captura por ventanas.
  */
@@ -68,7 +68,7 @@ class PanelActivity : ComponentActivity() {
         })
 
         setContent {
-            CardboardPOCTheme {
+            CeluVRTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val capturing by ScreenCaptureService.capturing.collectAsState()
                     LaunchedEffect(capturing) {
@@ -124,7 +124,7 @@ class PanelActivity : ComponentActivity() {
     private fun warnIfPanelNotCaptured() {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         if (ScreenCaptureService.isCapturing && !ScreenCaptureService.capturedTaskVisible) {
-            Log.w(TAG, "panel al frente sin captura: en el selector no se eligió CardboardPOC")
+            Log.w(TAG, "panel al frente sin captura: en el selector no se eligió CeluVR")
         }
     }
 
@@ -207,7 +207,7 @@ class PanelActivity : ComponentActivity() {
 
         /**
          * Trae el panel al frente desde cualquier contexto. Con NEW_TASK el sistema usa la tarea de
-         * CardboardPOC si ya existe, y REORDER_TO_FRONT sube el panel dentro de ella sin crear otro.
+         * CeluVR si ya existe, y REORDER_TO_FRONT sube el panel dentro de ella sin crear otro.
          * NO_USER_ACTION evita que la app de adelante lo tome como que el usuario la deja y pase a
          * ventana flotante (YouTube lo hace): flotando sigue contando como visible, y si es la app
          * capturada el visor nunca pasaría a la captura por ventanas.

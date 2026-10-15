@@ -116,7 +116,7 @@ class StereoOverlay(private val context: AccessibilityService) {
         val display = context.getSystemService(DisplayManager::class.java)
             .getDisplay(Display.DEFAULT_DISPLAY)
         return ContextThemeWrapper(
-            context.createDisplayContext(display), R.style.Theme_CardboardPOC
+            context.createDisplayContext(display), R.style.Theme_CeluVR
         )
     }
 
