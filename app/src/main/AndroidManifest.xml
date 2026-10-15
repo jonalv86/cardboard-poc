@@ -30,14 +30,14 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.CardboardPOC"
+        android:theme="@style/Theme.CeluVR"
         tools:targetApi="31">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:screenOrientation="portrait"
-            android:theme="@style/Theme.CardboardPOC">
+            android:theme="@style/Theme.CeluVR.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -49,7 +49,7 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="false"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.CardboardPOC" />
+            android:theme="@style/Theme.CeluVR" />
         <service
             android:name=".ScreenCaptureService"
             android:foregroundServiceType="mediaProjection|specialUse"
@@ -70,7 +70,7 @@
         <service
             android:name=".JoystickAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:label="Joystick Controller (CardboardPOC)"
+            android:label="@string/accessibility_service_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

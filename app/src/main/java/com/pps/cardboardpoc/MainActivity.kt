@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -52,12 +53,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.pps.cardboardpoc.ui.theme.CardboardPOCTheme
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.pps.cardboardpoc.ui.theme.CeluVRTheme
 import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
@@ -109,6 +112,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         mediaProjectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -119,7 +123,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val systemInDark = isSystemInDarkTheme()
             var isDarkTheme by remember { mutableStateOf(systemInDark) }
-            CardboardPOCTheme(darkTheme = isDarkTheme) {
+            CeluVRTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
                     val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
@@ -273,6 +277,8 @@ fun CaptureScreen(
     onToggleDarkMode: () -> Unit = {}
 ) {
     var showInfoDialog by remember { mutableStateOf(false) }
+    val appName = stringResource(R.string.app_name)
+    val serviceLabel = stringResource(R.string.accessibility_service_label)
 
     Column(
         modifier = Modifier
@@ -291,13 +297,13 @@ fun CaptureScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_vr_headset_desktop),
+                    painter = painterResource(id = R.drawable.ic_celuvr_logo),
                     contentDescription = null,
                     modifier = Modifier.size(36.dp),
                     tint = Color.Unspecified
                 )
                 Text(
-                    text = "CARDBOARD",
+                    text = appName,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -387,13 +393,13 @@ fun CaptureScreen(
                         serviceConnected && shizukuRunning ->
                             "Shizuku activo: Iniciar abre el panel de apps directo en el visor con máxima fluidez y rendimiento estéreo."
                         serviceConnected && fullScreenRejected ->
-                            "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná CardboardPOC."
+                            "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName."
                         serviceConnected ->
-                            "Tocá Iniciar, elegí \"Una sola app\" y seleccioná CardboardPOC para abrir el panel inmersivo en el visor."
+                            "Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName para abrir el panel inmersivo en el visor."
                         serviceEnabled ->
                             "El servicio de accesibilidad está activado pero detenido. Apágalo y vuelve a encenderlo en Ajustes."
                         else ->
-                            "Falta activar el servicio de accesibilidad \"Joystick Controller (CardboardPOC)\" para dibujar la vista estéreo."
+                            "Falta activar el servicio de accesibilidad \"$serviceLabel\" para dibujar la vista estéreo."
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -453,6 +459,7 @@ fun StatusChip(label: String, active: Boolean, modifier: Modifier = Modifier) {
 
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -494,7 +501,7 @@ fun AboutScreen(onBack: () -> Unit) {
 
                 // App Icon
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_vr_headset_desktop),
+                    painter = painterResource(id = R.drawable.ic_celuvr_logo),
                     contentDescription = "Icono de la aplicación",
                     modifier = Modifier.size(88.dp),
                     tint = Color.Unspecified
@@ -503,7 +510,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 // App Name & Version
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "CardboardPOC",
+                        text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
@@ -590,7 +597,7 @@ fun AboutScreen(onBack: () -> Unit) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_university),
                             contentDescription = "Logo Institución UNGS",
-                            modifier = Modifier.size(44.dp),
+                            modifier = Modifier.size(48.dp),
                             tint = Color.Unspecified
                         )
                         Column(
@@ -620,7 +627,7 @@ fun AboutScreen(onBack: () -> Unit) {
 @Preview(showBackground = true)
 @Composable
 fun CaptureScreenPreview() {
-    CardboardPOCTheme {
+    CeluVRTheme {
         Surface {
             CaptureScreen(
                 supported = true,
@@ -637,7 +644,7 @@ fun CaptureScreenPreview() {
 @Preview(showBackground = true)
 @Composable
 fun CaptureScreenDarkPreview() {
-    CardboardPOCTheme(darkTheme = true) {
+    CeluVRTheme(darkTheme = true) {
         Surface {
             CaptureScreen(
                 supported = true,
@@ -655,7 +662,7 @@ fun CaptureScreenDarkPreview() {
 @Preview(showBackground = true)
 @Composable
 fun AboutScreenPreview() {
-    CardboardPOCTheme {
+    CeluVRTheme {
         AboutScreen(onBack = {})
     }
 }

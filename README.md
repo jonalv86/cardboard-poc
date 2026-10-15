@@ -1,4 +1,4 @@
-# CardboardPOC
+# CeluVR
 
 Prueba de concepto que **captura la pantalla de otra aplicación Android en tiempo real y la
 muestra en modo estéreo** dentro de un visor Google Cardboard.
@@ -71,7 +71,7 @@ rompen. Las versiones fijadas hoy —Gradle 8.9, plugin 8.7.3— son las que est
 ## Cómo usarlo
 
 1. Poné el celular **en horizontal antes de abrir la app**. Todo el flujo lo asume.
-2. Abrí CardboardPOC y tocá **Iniciar captura**.
+2. Abrí CeluVR y tocá **Iniciar captura**.
 3. La primera vez te va a mandar a Ajustes a habilitar *"Mostrar sobre otras apps"*. Es un permiso
    que Android no concede con un diálogo simple.
 4. Elegí **"Una sola app"** y seleccioná la que querés ver en el visor.
@@ -86,7 +86,7 @@ igual, pero la mayoría de las apps de video y de juegos abiertas desde el panel
 por segundo y sin video. Con Shizuku activo, todas se ven fluidas.
 
 **Qué es Shizuku:** [Shizuku](https://shizuku.rikka.app/) es una app gratuita que le presta a otras
-apps los permisos de la depuración de Android (los de adb), sin root ni computadora. CardboardPOC los
+apps los permisos de la depuración de Android (los de adb), sin root ni computadora. CeluVR los
 usa para abrir las apps en una pantalla virtual propia y mostrarlas en el visor sin pasar por la
 captura de pantalla. El detalle de por qué hace falta está en la bitácora, en "Pantalla virtual con
 Shizuku".
@@ -103,13 +103,13 @@ Shizuku".
    dispositivo con código de vinculación".
 6. Escribir ese código en la notificación de Shizuku.
 7. La primera vez que el visor arranque con Shizuku, elegir "Permitir todo el tiempo" en "¿Permitir a
-   CardboardPOC acceder a Shizuku?".
+   CeluVR acceder a Shizuku?".
 
 **Después de cada reinicio del celular, o si Shizuku se detuvo:**
 
 1. Conectar el celular a Wi-Fi.
 2. Abrir Shizuku y tocar "Iniciar". Tiene que decir que está en ejecución.
-3. Abrir CardboardPOC: el texto tiene que empezar con "Shizuku está activo".
+3. Abrir CeluVR: el texto tiene que empezar con "Shizuku está activo".
 
 Con Shizuku activo, **Iniciar visor** abre el panel directo en el visor, sin elegir nada en el selector.
 El Wi-Fi solo hace falta para arrancar Shizuku: no necesita internet (sirve el hotspot de otro

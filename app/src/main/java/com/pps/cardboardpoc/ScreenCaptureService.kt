@@ -224,7 +224,7 @@ class ScreenCaptureService : Service() {
     }
 
     /**
-     * Abre el panel solo si en el selector se eligió CardboardPOC. Con otra app elegida, el panel la
+     * Abre el panel solo si en el selector se eligió CeluVR. Con otra app elegida, el panel la
      * taparía y la dejaría fuera de la proyección. El selector corre dentro de nuestra tarea, así que
      * al volver de él la tarea sigue a la vista hasta que termina la transición hacia la app elegida:
      * solo cuenta que siga a la vista pasado [START_SCREEN_WAIT_MS].
@@ -240,7 +240,7 @@ class ScreenCaptureService : Service() {
                 mainHandler.postDelayed(this, START_SCREEN_POLL_MS)
                 return
             }
-            Log.d(TAG, "se eligió CardboardPOC: se abre el panel")
+            Log.d(TAG, "se eligió CeluVR: se abre el panel")
             JoystickManager.accessibilityService?.let { PanelActivity.show(it) }
         }
     }
@@ -545,9 +545,9 @@ class ScreenCaptureService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CardboardPOC")
-            .setContentText("Capturando pantalla (prueba de concepto)")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("Capturando pantalla")
+            .setSmallIcon(R.drawable.ic_stat_celuvr)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Detener", stopAction)
             .build()
