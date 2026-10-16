@@ -316,40 +316,36 @@ object JoystickManager {
     }
 
     /**
-     * Vuelve a evaluar si el cursor está sobre un borde. Si se queda ahí [EDGE_DWELL_MS], la pantalla
-     * avanza hacia ese lado hasta que el cursor sale del borde. En una esquina gana el borde vertical.
-     * Con el gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura
-     * tampoco: no hay pantalla estéreo que mirar.
+     * Vuelve a evaluar si el cursor está sobre un borde, según [EdgeZone]. Si se queda ahí
+     * [EDGE_DWELL_MS], la pantalla avanza hacia ese lado hasta que el cursor deja el borde. Con el
+     * gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura tampoco:
+     * no hay pantalla estéreo que mirar.
      */
     fun refreshEdgeContact() {
         val enabled = !pressing && ScreenCaptureService.isCapturing &&
             screenWidth != 0 && screenHeight != 0
-        val dirY = if (enabled) edgeDirection(cursorY, screenHeight.toFloat()) else 0
-        val dirX = if (enabled && dirY == 0) {
-            edgeDirection(cursorX, screenWidth.toFloat())
-        } else {
-            0
-        }
         val current = edgeContact
-        if (current != null && current.dirX == dirX && current.dirY == dirY) return
-        if (current == null && dirX == 0 && dirY == 0) return
+        val edge = if (enabled) {
+            EdgeZone.edgeAt(
+                cursorX, cursorY, screenWidth, screenHeight,
+                current?.let { EdgeZone.Edge(it.dirX, it.dirY) } ?: EdgeZone.NONE
+            )
+        } else {
+            EdgeZone.NONE
+        }
+        if (current != null && current.dirX == edge.dirX && current.dirY == edge.dirY) return
+        if (current == null && edge.isNone) return
 
         handler.removeCallbacks(startEdgeScroll)
         if (current != null) accessibilityService?.stopEdgeScroll()
-        if (dirX == 0 && dirY == 0) {
+        if (edge.isNone) {
             edgeContact = null
             Log.d(TAG, "Cursor fuera del borde")
             return
         }
-        edgeContact = EdgeContact(dirX, dirY, SystemClock.uptimeMillis())
-        Log.d(TAG, "Cursor en el borde ($dirX, $dirY)")
+        edgeContact = EdgeContact(edge.dirX, edge.dirY, SystemClock.uptimeMillis())
+        Log.d(TAG, "Cursor en el borde (${edge.dirX}, ${edge.dirY})")
         handler.postDelayed(startEdgeScroll, EDGE_DWELL_MS)
-    }
-
-    private fun edgeDirection(value: Float, size: Float): Int = when {
-        value <= 0f -> -1
-        value >= size -> 1
-        else -> 0
     }
 
     private fun directionX(): Float =
