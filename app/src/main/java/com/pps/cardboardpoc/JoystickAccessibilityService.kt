@@ -1,8 +1,14 @@
 package com.pps.cardboardpoc
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.graphics.PointF
 import android.os.Build
+import androidx.core.content.ContextCompat
 import android.view.KeyEvent
 import android.util.Log
 import android.view.InputDevice
@@ -23,6 +29,14 @@ class JoystickAccessibilityService : AccessibilityService() {
 
         // En modo mouse el control aparece como un dispositivo aparte, "VR BOX Mouse".
         private const val VR_BOX_DEVICE_PREFIX = "VR BOX"
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: arranca el avance hacia el borde
+         * de [EXTRA_DEBUG_EDGE_X] y [EXTRA_DEBUG_EDGE_Y] (-1, 0 o 1), o lo detiene si los dos son 0.
+         */
+        const val ACTION_DEBUG_EDGE_SCROLL = "com.pps.cardboardpoc.debug.AVANCE"
+        const val EXTRA_DEBUG_EDGE_X = "x"
+        const val EXTRA_DEBUG_EDGE_Y = "y"
     }
 
     private val pressFinger = VirtualFinger(this, "gatillo")
@@ -30,6 +44,14 @@ class JoystickAccessibilityService : AccessibilityService() {
 
     /** Si el botón que apoya el dedo sigue apretado. */
     private var buttonHeld = false
+
+    private val debugEdgeScrollReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val dirX = intent.getIntExtra(EXTRA_DEBUG_EDGE_X, 0)
+            val dirY = intent.getIntExtra(EXTRA_DEBUG_EDGE_Y, 0)
+            if (dirX == 0 && dirY == 0) stopEdgeScroll() else startEdgeScroll(dirX, dirY)
+        }
+    }
 
     /**
      * Vincula el servicio activo al JoystickManager al momento de la conexión para permitir
@@ -39,8 +61,14 @@ class JoystickAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.d(TAG, "Servicio de Accesibilidad Conectado")
         JoystickManager.accessibilityService = this
-        
+
         setCaptureActive(ScreenCaptureService.isCapturing)
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            ContextCompat.registerReceiver(
+                this, debugEdgeScrollReceiver, IntentFilter(ACTION_DEBUG_EDGE_SCROLL),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        }
     }
 
     /**
@@ -76,6 +104,10 @@ class JoystickAccessibilityService : AccessibilityService() {
         super.onDestroy()
         Log.d(TAG, "Servicio de Accesibilidad Destruido")
         JoystickManager.accessibilityService = null
+        edgeScroller.release()
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            unregisterReceiver(debugEdgeScrollReceiver)
+        }
         if (ScreenCaptureService.isCapturing) {
             startService(ScreenCaptureService.stopIntent(this))
         }
@@ -150,7 +182,7 @@ class JoystickAccessibilityService : AccessibilityService() {
         if (pressFinger.isDown) return
         buttonHeld = true
         pressFinger.down(
-            x, y, settleMs = 0L,
+            x, y, settleMs = { 0L },
             target = { PointF(JoystickManager.cursorX, JoystickManager.cursorY) },
             keepDown = { buttonHeld },
             onUp = {}

@@ -21,13 +21,15 @@ import kotlin.math.roundToInt
  *
  * Despachar un gesto cancela el que esté en curso, así que dos dedos no pueden estar apoyados a la vez:
  * el que se apoya después cancela al otro.
+ *
+ * Los callbacks de los tramos llegan por [handler], y sus métodos se llaman desde ese mismo hilo. Si el
+ * hilo está ocupado, el tramo siguiente sale tarde y la app ve el dedo detenido mientras tanto.
  */
 class VirtualFinger(
     private val service: AccessibilityService,
-    private val label: String
+    private val label: String,
+    private val handler: Handler = Handler(Looper.getMainLooper())
 ) {
-    private val handler = Handler(Looper.getMainLooper())
-
     /** Último tramo despachado; null si el dedo no está apoyado. */
     private var stroke: StrokeDescription? = null
 
@@ -42,7 +44,7 @@ class VirtualFinger(
     private var followSinceMs = 0L
 
     private var segmentCount = 0
-    private var settleMs = 0L
+    private var settleMs: () -> Long = { 0L }
     private var target: () -> PointF = { PointF(lastX, lastY) }
     private var keepDown: () -> Boolean = { false }
     private var onUp: (cancelled: Boolean) -> Unit = {}
@@ -55,17 +57,20 @@ class VirtualFinger(
 
     /**
      * Apoya el dedo en (x, y). Mientras [keepDown] devuelva true el dedo sigue a [target]; cuando
-     * devuelve false se levanta. Con [settleMs] mayor a 0 el dedo llega al objetivo y se queda quieto ese
-     * tiempo antes de levantarse, para que la app no tome el final como un lanzamiento (fling). [onUp]
-     * avisa cuando el dedo se levantó o el sistema canceló el gesto. Devuelve false si ya estaba apoyado.
+     * devuelve false se levanta. Si al levantarse [settleMs] da más de 0, el dedo llega al objetivo y se
+     * queda quieto ese tiempo antes de levantarse, para que la app no tome el final como un lanzamiento
+     * (fling); con 0 se levanta en movimiento y la app sigue desplazándose sola. Con [firstTo] el dedo
+     * se apoya ya moviéndose y llega ahí en [SEGMENT_MIN_MS]. [onUp] avisa cuando el dedo se levantó o
+     * el sistema canceló el gesto. Devuelve false si ya estaba apoyado.
      */
     fun down(
         x: Float,
         y: Float,
-        settleMs: Long,
+        settleMs: () -> Long,
         target: () -> PointF,
         keepDown: () -> Boolean,
-        onUp: (cancelled: Boolean) -> Unit
+        onUp: (cancelled: Boolean) -> Unit,
+        firstTo: PointF? = null
     ): Boolean {
         if (isDown) return false
         this.settleMs = settleMs
@@ -76,7 +81,8 @@ class VirtualFinger(
         lastX = x
         lastY = y
         Log.d(TAG, "$label: dedo apoyado en ($x, $y)")
-        dispatch(StrokeDescription(pointPath(x, y), 0, SEGMENT_MIN_MS, true))
+        val path = if (firstTo != null && changesPixel(firstTo)) lineTo(firstTo) else pointPath(x, y)
+        dispatch(StrokeDescription(path, 0, SEGMENT_MIN_MS, true))
         return true
     }
 
@@ -97,35 +103,24 @@ class VirtualFinger(
      */
     private fun dispatchNext() {
         val previous = stroke ?: return
-        val holding = keepDown()
+        // El objetivo puede ser el que decide que el recorrido terminó: si keepDown se mirara antes,
+        // el tramo que llega al final no levantaría y el dedo se quedaría quieto un tramo entero.
         val point = target()
-        // El sistema redondea cada punto del gesto a píxeles enteros: un tramo que no cambia de píxel
-        // no genera ningún evento y lo informa como cancelado. Pasa con el temblor de la cabeza, que
-        // mueve el cursor fracciones de píxel.
-        val moved = point.x.roundToInt() != lastX.roundToInt() ||
-            point.y.roundToInt() != lastY.roundToInt()
+        val holding = keepDown()
+        val moved = changesPixel(point)
         if (holding && !moved) {
             followSinceMs = SystemClock.uptimeMillis()
             handler.postDelayed(followTarget, FOLLOW_POLL_MS)
             return
         }
 
-        val path = pointPath(lastX, lastY)
-        if (moved) {
-            path.lineTo(point.x, point.y)
-            // El sistema exige que cada tramo arranque exactamente donde terminó el anterior, y ese
-            // final lo calcula con PathMeasure: puede diferir del objetivo por redondeo.
-            val end = FloatArray(2)
-            val measure = PathMeasure(path, false)
-            measure.getPosTan(measure.length, end, null)
-            lastX = end[0]
-            lastY = end[1]
-        }
-        // Con settleMs, el tramo que todavía se mueve no levanta: lo hace el siguiente, ya quieto.
-        val lifting = !holding && (settleMs == 0L || !moved)
+        val path = if (moved) lineTo(point) else pointPath(lastX, lastY)
+        val settle = if (holding) 0L else settleMs()
+        // Con settle, el tramo que todavía se mueve no levanta: lo hace el siguiente, ya quieto.
+        val lifting = !holding && (settle == 0L || !moved)
         // El tramo dura lo que tardó el objetivo en recorrerlo, para que la app vea la misma velocidad.
-        val duration = if (lifting && settleMs > 0L) {
-            settleMs
+        val duration = if (lifting && settle > 0L) {
+            settle
         } else {
             (SystemClock.uptimeMillis() - followSinceMs).coerceIn(SEGMENT_MIN_MS, SEGMENT_MAX_MS)
         }
@@ -171,16 +166,40 @@ class VirtualFinger(
         onUp(cancelled)
     }
 
+    /**
+     * Si llevar el dedo a [point] lo cambia de píxel. El sistema redondea cada punto del gesto a
+     * píxeles enteros: un tramo que no cambia de píxel no genera ningún evento y lo informa como
+     * cancelado. Pasa con el temblor de la cabeza, que mueve el cursor fracciones de píxel.
+     */
+    private fun changesPixel(point: PointF): Boolean =
+        point.x.roundToInt() != lastX.roundToInt() || point.y.roundToInt() != lastY.roundToInt()
+
+    /** Recorrido desde donde está el dedo hasta [point]; deja ahí el punto de partida del próximo tramo. */
+    private fun lineTo(point: PointF): Path {
+        val path = pointPath(lastX, lastY)
+        path.lineTo(point.x, point.y)
+        // El sistema exige que cada tramo arranque exactamente donde terminó el anterior, y ese final
+        // lo calcula con PathMeasure: puede diferir del objetivo por redondeo.
+        val end = FloatArray(2)
+        val measure = PathMeasure(path, false)
+        measure.getPosTan(measure.length, end, null)
+        lastX = end[0]
+        lastY = end[1]
+        return path
+    }
+
     private fun pointPath(x: Float, y: Float) = Path().apply { moveTo(x, y) }
 
-    private companion object {
-        const val TAG = "DragDebug"
+    companion object {
+        private const val TAG = "DragDebug"
 
-        /** Duración mínima y máxima de cada tramo, en ms. */
+        /** Duración mínima de cada tramo, en ms; es lo que dura el que apoya el dedo. */
         const val SEGMENT_MIN_MS = 16L
-        const val SEGMENT_MAX_MS = 100L
+
+        /** Duración máxima de cada tramo, en ms. */
+        private const val SEGMENT_MAX_MS = 100L
 
         /** Cada cuánto se mira el objetivo mientras el dedo está apoyado y quieto, en ms. */
-        const val FOLLOW_POLL_MS = 16L
+        private const val FOLLOW_POLL_MS = 16L
     }
 }

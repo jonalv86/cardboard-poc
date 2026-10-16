@@ -548,7 +548,7 @@ class CardboardOverlayRenderer(
     private fun drawControlBar(space: ScreenSpace) {
         val shapeUi = shapeProgram ?: return
         if (barReveal < 0.01f) return
-        val bar = ControlBar.bounds(screenWidth, screenHeight)
+        val bar = ControlBar.bounds(screenWidth, screenHeight, barButtons)
         val centerY = bar.centerY + (1f - barReveal) * ControlBar.BOTTOM_MARGIN_PX
         drawRoundedBox(
             shapeUi, space, bar.centerX, centerY, bar.width / 2f, bar.height / 2f,
@@ -559,7 +559,7 @@ class CardboardOverlayRenderer(
         val radius = ControlBar.BUTTON_DIAMETER_PX / 2f
         val iconHalf = radius * ICON_SIZE_FRACTION
         barButtons.forEachIndexed { index, button ->
-            val centerX = ControlBar.buttonCenterX(index, screenWidth, screenHeight)
+            val centerX = ControlBar.buttonCenterX(index, screenWidth, screenHeight, barButtons)
             val active = button == ControlBar.Button.PORTRAIT && portraitActive
             val highlight = (if (active) BUTTON_ACTIVE_ALPHA else 0f) +
                 (if (index == hoveredButton) BUTTON_HOVER_ALPHA else 0f)
@@ -709,8 +709,11 @@ class CardboardOverlayRenderer(
         barReveal += ((if (barVisible) 1f else 0f) - barReveal) * step
         barButtons = ControlBar.buttons
         portraitActive = ScreenCaptureService.portrait.value
-        val hovered =
-            if (barVisible) ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight) else null
+        val hovered = if (barVisible) {
+            ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight, barButtons)
+        } else {
+            null
+        }
         hoveredButton = if (hovered == null) -1 else barButtons.indexOf(hovered)
     }
 

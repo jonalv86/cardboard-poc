@@ -71,8 +71,8 @@ object ControlBar {
             hypot(maxOf(left - x, 0f, x - right), maxOf(top - y, 0f, y - bottom))
     }
 
-    /** Píldora de la barra, para una pantalla de [screenWidth] x [screenHeight]. */
-    fun bounds(screenWidth: Int, screenHeight: Int): Box {
+    /** Píldora de la barra con [buttons], para una pantalla de [screenWidth] x [screenHeight]. */
+    fun bounds(screenWidth: Int, screenHeight: Int, buttons: List<Button> = this.buttons): Box {
         val count = buttons.size
         val width = count * BUTTON_DIAMETER_PX + (count - 1) * BUTTON_GAP_PX + 2 * PADDING_PX
         val height = BUTTON_DIAMETER_PX + 2 * PADDING_PX
@@ -82,20 +82,36 @@ object ControlBar {
     }
 
     /** Centro horizontal del botón en la posición [index] de [buttons]. */
-    fun buttonCenterX(index: Int, screenWidth: Int, screenHeight: Int): Float =
-        bounds(screenWidth, screenHeight).left + PADDING_PX + BUTTON_DIAMETER_PX / 2f +
+    fun buttonCenterX(
+        index: Int,
+        screenWidth: Int,
+        screenHeight: Int,
+        buttons: List<Button> = this.buttons
+    ): Float =
+        bounds(screenWidth, screenHeight, buttons).left + PADDING_PX + BUTTON_DIAMETER_PX / 2f +
             index * (BUTTON_DIAMETER_PX + BUTTON_GAP_PX)
 
-    /** Si el punto cae sobre la píldora. */
-    fun contains(x: Float, y: Float, screenWidth: Int, screenHeight: Int): Boolean =
-        bounds(screenWidth, screenHeight).contains(x, y)
+    /** Si el punto cae sobre la píldora con [buttons]. */
+    fun contains(
+        x: Float,
+        y: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        buttons: List<Button> = this.buttons
+    ): Boolean = bounds(screenWidth, screenHeight, buttons).contains(x, y)
 
-    /** Botón bajo el punto, o null si el punto no cae sobre ningún círculo de botón. */
-    fun buttonAt(x: Float, y: Float, screenWidth: Int, screenHeight: Int): Button? {
-        val centerY = bounds(screenWidth, screenHeight).centerY
+    /** Botón de [buttons] bajo el punto, o null si el punto no cae sobre ningún círculo de botón. */
+    fun buttonAt(
+        x: Float,
+        y: Float,
+        screenWidth: Int,
+        screenHeight: Int,
+        buttons: List<Button> = this.buttons
+    ): Button? {
+        val centerY = bounds(screenWidth, screenHeight, buttons).centerY
         val radius = BUTTON_DIAMETER_PX / 2f
         return buttons.withIndex().firstOrNull { (index, _) ->
-            hypot(x - buttonCenterX(index, screenWidth, screenHeight), y - centerY) <= radius
+            hypot(x - buttonCenterX(index, screenWidth, screenHeight, buttons), y - centerY) <= radius
         }?.value
     }
 
@@ -103,16 +119,17 @@ object ControlBar {
      * Si la barra queda a la vista con el cursor en el punto, sabiendo si ya lo estaba. Aparece en la
      * zona de [REVEAL_ZONE_PX] junto al borde de abajo, y una vez visible se queda mientras el cursor
      * siga sobre la píldora o a menos de [KEEP_MARGIN_PX] de ella: así se puede subir hasta los botones
-     * sin que se esconda.
+     * sin que se esconda. La píldora es la que corresponde a [buttons].
      */
     fun nextVisible(
         visible: Boolean,
         x: Float,
         y: Float,
         screenWidth: Int,
-        screenHeight: Int
+        screenHeight: Int,
+        buttons: List<Button> = this.buttons
     ): Boolean {
         if (y >= screenHeight - REVEAL_ZONE_PX) return true
-        return visible && bounds(screenWidth, screenHeight).distanceTo(x, y) <= KEEP_MARGIN_PX
+        return visible && bounds(screenWidth, screenHeight, buttons).distanceTo(x, y) <= KEEP_MARGIN_PX
     }
 }
