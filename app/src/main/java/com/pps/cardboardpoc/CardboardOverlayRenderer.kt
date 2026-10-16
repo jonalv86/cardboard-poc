@@ -51,17 +51,38 @@ class CardboardOverlayRenderer(
     /** Tiempo con el dedo quieto a partir del cual la app lo toma como pulsación larga. */
     private var longPressMs = ViewConfiguration.getLongPressTimeout().toLong()
 
-    private var program = 0
-    private var positionHandle = 0
-    private var texCoordHandle = 0
-    private var scaleHandle = 0
-    private var offsetHandle = 0
-    private var alphaHandle = 0
-    private var textureHandle = 0
+    /** Qué se ve a los costados de una imagen vertical. Se puede cambiar desde cualquier hilo. */
+    @Volatile
+    var portraitBackground = PortraitBackground.BLUR
+
+    /** Fondo a los costados de una imagen vertical. */
+    enum class PortraitBackground {
+        /** La misma imagen agrandada, desenfocada y oscurecida, como en los videos verticales. */
+        BLUR,
+
+        /** Negro. */
+        BLACK
+    }
+
+    private var frameProgram: TexturedProgram? = null
+    private var downsampleProgram: TexturedProgram? = null
+    private var blurProgram: TexturedProgram? = null
     private var textureId = 0
+
+    /**
+     * Copia chica del frame de donde sale el fondo desenfocado, y el framebuffer con que se dibuja.
+     * Valen 0 hasta que se usa ese fondo por primera vez.
+     */
+    private var blurTextureId = 0
+    private var blurFramebufferId = 0
+    private var blurWidth = 0
+    private var blurHeight = 0
+
+    /** Si la copia chica corresponde al frame que está en la textura. */
+    private var blurUpToDate = false
     private var noticeTextureId = 0
 
-    /** Textura del ícono de cada botón de [ControlBar.buttons], en el mismo orden. */
+    /** Textura del ícono de cada [ControlBar.Button], indexada por su ordinal. */
     private var iconTextureIds = IntArray(0)
 
     private var reticleProgram: UiProgram? = null
@@ -98,11 +119,24 @@ class CardboardOverlayRenderer(
     private var barReveal = 0f
     private var hoveredButton = -1
 
+    /** Botones de la barra en este cuadro; [hoveredButton] es una posición en esta lista. */
+    private var barButtons = ControlBar.buttons
+
+    /** Si la pantalla capturada está en vertical, para resaltar su botón. */
+    private var portraitActive = false
+
     /** Último borde tocado; se conserva para animar la salida después de dejarlo. */
     private var edgeDirX = 0
     private var edgeDirY = 0
 
     private var frameAspect = 1f
+
+    /**
+     * Medio tamaño de la imagen en coordenadas del ojo (1 = el ojo entero), calculado una vez por
+     * cuadro en [updateImageScale].
+     */
+    private var imageScaleX = 1f
+    private var imageScaleY = 1f
     private var surfaceWidth = 0
     private var surfaceHeight = 0
 
@@ -120,17 +154,13 @@ class CardboardOverlayRenderer(
         shapeProgram = buildUiProgram(SHAPE_FRAGMENT_SHADER)
         glowProgram = buildUiProgram(GLOW_FRAGMENT_SHADER)
 
-        program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
-        if (program == 0) return
-
-        positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        scaleHandle = GLES20.glGetUniformLocation(program, "uScale")
-        offsetHandle = GLES20.glGetUniformLocation(program, "uOffset")
-        alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
-        textureHandle = GLES20.glGetUniformLocation(program, "uTexture")
+        downsampleProgram = buildTexturedProgram(DOWNSAMPLE_FRAGMENT_SHADER)
+        blurProgram = buildTexturedProgram(BLUR_FRAGMENT_SHADER)
+        frameProgram = buildTexturedProgram(FRAGMENT_SHADER) ?: return
         noticeTextureId = createNoticeTexture()
-        iconTextureIds = IntArray(ControlBar.buttons.size) { createIconTexture(ControlBar.buttons[it]) }
+        iconTextureIds = IntArray(ControlBar.Button.entries.size) {
+            createIconTexture(ControlBar.Button.entries[it])
+        }
 
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
@@ -148,6 +178,11 @@ class CardboardOverlayRenderer(
         // La textura queda vacía hasta el primer frame, así que un tamaño previo no aplica.
         textureWidth = 0
         textureHeight = 0
+        blurTextureId = 0
+        blurFramebufferId = 0
+        blurWidth = 0
+        blurHeight = 0
+        blurUpToDate = false
     }
 
     override fun onSurfaceChanged(width: Int, height: Int) {
@@ -159,7 +194,9 @@ class CardboardOverlayRenderer(
     override fun onNewFrame(headTransform: HeadTransform) {
         // Una sola subida por frame: onDrawEye corre dos veces sobre la misma textura.
         uploadPendingFrame()
-        headPointer?.update(headTransform)
+        updateImageScale()
+        if (showsBlurredBackground() && !blurUpToDate) updateBlur()
+        headPointer?.update(headTransform, imageScaleX)
         updateUiState()
         val lastMouseEvent = JoystickManager.lastMouseModeEventMs
         noticeVisible = lastMouseEvent != 0L &&
@@ -169,27 +206,17 @@ class CardboardOverlayRenderer(
     override fun onDrawEye(eye: CardboardView.Eye) {
         // El SDK ya limpió el framebuffer y dejó puesto el viewport de esta mitad. Limpiar de nuevo
         // acá borraría el ojo dibujado antes, porque glClear ignora el viewport.
-        if (program == 0) return
+        val frame = frameProgram ?: return
 
         val viewportAspect = (surfaceWidth / 2f) / surfaceHeight
         // La UI es translúcida y los colores de los shaders y de los bitmaps están premultiplicados.
         // Se apaga al terminar para no dejarle el estado cambiado a la pasada de distorsión del SDK.
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         if (textureWidth != 0) {
-            // La pantalla capturada es mucho más ancha que la mitad que le toca a cada ojo; sin esto
-            // la imagen sale estirada a lo alto.
-            val scaleX: Float
-            val scaleY: Float
-            if (frameAspect > viewportAspect) {
-                scaleX = 1f
-                scaleY = viewportAspect / frameAspect
-            } else {
-                scaleX = frameAspect / viewportAspect
-                scaleY = 1f
-            }
-            drawTexturedQuad(textureId, scaleX, scaleY, 0f, 0f)
+            if (showsBlurredBackground() && blurUpToDate) drawBlurredBackground()
+            drawQuad(frame, textureId, imageScaleX, imageScaleY, 0f, 0f)
             if (screenWidth != 0) {
-                val space = ScreenSpace(scaleX, scaleY, surfaceWidth / 2f)
+                val space = ScreenSpace(imageScaleX, imageScaleY, surfaceWidth / 2f)
                 GLES20.glEnable(GLES20.GL_BLEND)
                 drawEdgeGlow(space)
                 drawControlBar(space)
@@ -206,6 +233,25 @@ class CardboardOverlayRenderer(
                 0f,
                 NOTICE_CENTER_Y
             )
+        }
+    }
+
+    /**
+     * Calcula el tamaño de la imagen dentro de cada ojo. Una imagen horizontal ocupa todo el ancho, sin
+     * estirarse a lo alto. Una vertical no ocupa todo el alto: arriba y abajo quedaría fuera de lo que
+     * se ve a través de la lente. Toma el alto que tendría la misma pantalla en horizontal, agrandado
+     * [PORTRAIT_HEIGHT_RATIO] veces.
+     */
+    private fun updateImageScale() {
+        if (surfaceHeight == 0) return
+        val viewportAspect = (surfaceWidth / 2f) / surfaceHeight
+        if (frameAspect > viewportAspect) {
+            imageScaleX = 1f
+            imageScaleY = viewportAspect / frameAspect
+        } else {
+            // En horizontal el aspecto de la pantalla es 1 / frameAspect.
+            imageScaleY = (viewportAspect * frameAspect * PORTRAIT_HEIGHT_RATIO).coerceAtMost(1f)
+            imageScaleX = frameAspect / viewportAspect * imageScaleY
         }
     }
 
@@ -266,6 +312,20 @@ class CardboardOverlayRenderer(
         GLES20.glDisableVertexAttribArray(ui.position)
     }
 
+    /** Programa que dibuja un quad con una textura; los uniforms que no usa quedan en -1 y se ignoran. */
+    private class TexturedProgram(val id: Int) {
+        val position = GLES20.glGetAttribLocation(id, "aPosition")
+        val texCoord = GLES20.glGetAttribLocation(id, "aTexCoord")
+        val scale = GLES20.glGetUniformLocation(id, "uScale")
+        val offset = GLES20.glGetUniformLocation(id, "uOffset")
+        val texScale = GLES20.glGetUniformLocation(id, "uTexScale")
+        val texOffset = GLES20.glGetUniformLocation(id, "uTexOffset")
+        val alpha = GLES20.glGetUniformLocation(id, "uAlpha")
+        val texture = GLES20.glGetUniformLocation(id, "uTexture")
+        val texel = GLES20.glGetUniformLocation(id, "uTexel")
+        val edgeFade = GLES20.glGetUniformLocation(id, "uEdgeFade")
+    }
+
     private fun drawTexturedQuad(
         texture: Int,
         scaleX: Float,
@@ -274,23 +334,145 @@ class CardboardOverlayRenderer(
         offsetY: Float,
         alpha: Float = 1f
     ) {
-        GLES20.glUseProgram(program)
+        val frame = frameProgram ?: return
+        drawQuad(frame, texture, scaleX, scaleY, offsetX, offsetY, alpha)
+    }
+
+    /**
+     * Dibuja [texture] con [textured] en un quad de medio tamaño ([scaleX], [scaleY]) corrido
+     * ([offsetX], [offsetY]). De la textura toma la franja vertical que empieza en [texOffsetY] y mide
+     * [texScaleY]; con una medida negativa la toma invertida.
+     */
+    private fun drawQuad(
+        textured: TexturedProgram,
+        texture: Int,
+        scaleX: Float,
+        scaleY: Float,
+        offsetX: Float,
+        offsetY: Float,
+        alpha: Float = 1f,
+        texScaleY: Float = 1f,
+        texOffsetY: Float = 0f
+    ) {
+        GLES20.glUseProgram(textured.id)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glUniform1i(textureHandle, 0)
-        GLES20.glUniform2f(scaleHandle, scaleX, scaleY)
-        GLES20.glUniform2f(offsetHandle, offsetX, offsetY)
-        GLES20.glUniform1f(alphaHandle, alpha)
+        GLES20.glUniform1i(textured.texture, 0)
+        GLES20.glUniform2f(textured.scale, scaleX, scaleY)
+        GLES20.glUniform2f(textured.offset, offsetX, offsetY)
+        GLES20.glUniform2f(textured.texScale, 1f, texScaleY)
+        GLES20.glUniform2f(textured.texOffset, 0f, texOffsetY)
+        GLES20.glUniform1f(textured.alpha, alpha)
 
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+        GLES20.glEnableVertexAttribArray(textured.position)
+        GLES20.glVertexAttribPointer(textured.position, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+        GLES20.glEnableVertexAttribArray(textured.texCoord)
+        GLES20.glVertexAttribPointer(textured.texCoord, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        GLES20.glDisableVertexAttribArray(positionHandle)
-        GLES20.glDisableVertexAttribArray(texCoordHandle)
+        GLES20.glDisableVertexAttribArray(textured.position)
+        GLES20.glDisableVertexAttribArray(textured.texCoord)
+    }
+
+    /** Si detrás de la imagen va el fondo desenfocado: solo con una imagen más angosta que el ojo. */
+    private fun showsBlurredBackground(): Boolean =
+        textureWidth != 0 && imageScaleX < 1f && portraitBackground == PortraitBackground.BLUR &&
+            downsampleProgram != null && blurProgram != null
+
+    /**
+     * Reduce el frame a una copia chica, promediando una grilla de muestras por píxel de la copia: así
+     * el fondo sale desenfocado sin titilar cuando el video se mueve. Se hace una vez por frame nuevo.
+     */
+    private fun updateBlur() {
+        val downsample = downsampleProgram ?: return
+        val width = BLUR_WIDTH_PX
+        val height = (BLUR_WIDTH_PX / frameAspect).toInt().coerceAtLeast(1)
+        if (width != blurWidth || height != blurHeight) createBlurTarget(width, height)
+        if (blurFramebufferId == 0) return
+
+        // El SDK dibuja los ojos en su propio framebuffer: hay que devolvérselo tal como estaba.
+        val previousFramebuffer = IntArray(1)
+        val previousViewport = IntArray(4)
+        GLES20.glGetIntegerv(GLES20.GL_FRAMEBUFFER_BINDING, previousFramebuffer, 0)
+        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, previousViewport, 0)
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, blurFramebufferId)
+        GLES20.glViewport(0, 0, width, height)
+        GLES20.glUseProgram(downsample.id)
+        // Cuatro por cuatro muestras repartidas sobre lo que cubre cada píxel de la copia.
+        GLES20.glUniform2f(downsample.texel, 0.25f / width, 0.25f / height)
+        drawQuad(downsample, textureId, 1f, 1f, 0f, 0f)
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, previousFramebuffer[0])
+        GLES20.glViewport(
+            previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]
+        )
+        blurUpToDate = true
+    }
+
+    /** Crea, o rehace con otro tamaño, la textura de la copia chica y su framebuffer. */
+    private fun createBlurTarget(width: Int, height: Int) {
+        deleteBlurTarget()
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        blurTextureId = ids[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blurTextureId)
+        GLES20.glTexImage2D(
+            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, width, height, 0,
+            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+        )
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+        GLES20.glGenFramebuffers(1, ids, 0)
+        blurFramebufferId = ids[0]
+        val previousFramebuffer = IntArray(1)
+        GLES20.glGetIntegerv(GLES20.GL_FRAMEBUFFER_BINDING, previousFramebuffer, 0)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, blurFramebufferId)
+        GLES20.glFramebufferTexture2D(
+            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, blurTextureId, 0
+        )
+        val status = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, previousFramebuffer[0])
+        if (status != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+            Log.e(TAG, "fondo desenfocado: framebuffer incompleto ($status)")
+            deleteBlurTarget()
+            return
+        }
+        blurWidth = width
+        blurHeight = height
+    }
+
+    private fun deleteBlurTarget() {
+        if (blurTextureId != 0) GLES20.glDeleteTextures(1, intArrayOf(blurTextureId), 0)
+        if (blurFramebufferId != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(blurFramebufferId), 0)
+        blurTextureId = 0
+        blurFramebufferId = 0
+        blurWidth = 0
+        blurHeight = 0
+    }
+
+    /**
+     * Dibuja detrás de la imagen vertical una franja del mismo alto y de todo el ancho del ojo, con la
+     * misma imagen agrandada hasta llenarla: se ve el centro del frame, desenfocado, oscurecido y
+     * apagándose hacia los costados del ojo.
+     */
+    private fun drawBlurredBackground() {
+        val blur = blurProgram ?: return
+        GLES20.glUseProgram(blur.id)
+        GLES20.glUniform2f(blur.texel, 1f / blurWidth, 1f / blurHeight)
+        GLES20.glUniform1f(blur.edgeFade, BLUR_EDGE_FADE_FRACTION)
+        // Al llenar el ancho del ojo, de la imagen entra a lo alto la misma fracción que ella ocupa
+        // del ancho. En la copia chica el borde de arriba de la imagen quedó en t = 1, al revés que en
+        // el frame, así que la franja se toma invertida.
+        val visible = imageScaleX
+        drawQuad(
+            blur, blurTextureId, 1f, imageScaleY, 0f, 0f,
+            alpha = BLUR_BRIGHTNESS, texScaleY = -visible, texOffsetY = 0.5f + visible / 2f
+        )
     }
 
     /**
@@ -318,6 +500,7 @@ class CardboardOverlayRenderer(
     private fun createIconTexture(button: ControlBar.Button): Int {
         val resId = when (button) {
             ControlBar.Button.HOME -> R.drawable.ic_apps_rounded
+            ControlBar.Button.PORTRAIT -> R.drawable.ic_screen_rotation
         }
         val drawable = context.getDrawable(resId) ?: return 0
         val bitmap = Bitmap.createBitmap(ICON_TEXTURE_PX, ICON_TEXTURE_PX, Bitmap.Config.ARGB_8888)
@@ -375,15 +558,19 @@ class CardboardOverlayRenderer(
 
         val radius = ControlBar.BUTTON_DIAMETER_PX / 2f
         val iconHalf = radius * ICON_SIZE_FRACTION
-        ControlBar.buttons.indices.forEach { index ->
+        barButtons.forEachIndexed { index, button ->
             val centerX = ControlBar.buttonCenterX(index, screenWidth, screenHeight)
-            if (index == hoveredButton) {
+            val active = button == ControlBar.Button.PORTRAIT && portraitActive
+            val highlight = (if (active) BUTTON_ACTIVE_ALPHA else 0f) +
+                (if (index == hoveredButton) BUTTON_HOVER_ALPHA else 0f)
+            if (highlight > 0f) {
                 drawRoundedBox(
                     shapeUi, space, centerX, centerY, radius, radius,
-                    fillAlpha = BUTTON_HOVER_ALPHA * barReveal, fillWhite = true, borderAlpha = 0f
+                    fillAlpha = highlight * barReveal, fillWhite = true,
+                    borderAlpha = if (active) BAR_BORDER_ALPHA * barReveal else 0f
                 )
             }
-            val icon = iconTextureIds.getOrElse(index) { 0 }
+            val icon = iconTextureIds.getOrElse(button.ordinal) { 0 }
             if (icon != 0) {
                 drawTexturedQuad(
                     icon,
@@ -520,9 +707,11 @@ class CardboardOverlayRenderer(
 
         val barVisible = JoystickManager.controlBarVisible
         barReveal += ((if (barVisible) 1f else 0f) - barReveal) * step
+        barButtons = ControlBar.buttons
+        portraitActive = ScreenCaptureService.portrait.value
         val hovered =
             if (barVisible) ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight) else null
-        hoveredButton = if (hovered == null) -1 else ControlBar.buttons.indexOf(hovered)
+        hoveredButton = if (hovered == null) -1 else barButtons.indexOf(hovered)
     }
 
     override fun onFinishFrame(viewport: Viewport?) = Unit
@@ -535,10 +724,14 @@ class CardboardOverlayRenderer(
         textureId = 0
         noticeTextureId = 0
         iconTextureIds = IntArray(0)
-        if (program != 0) {
-            GLES20.glDeleteProgram(program)
-            program = 0
+        deleteBlurTarget()
+        blurUpToDate = false
+        listOfNotNull(frameProgram, downsampleProgram, blurProgram).forEach {
+            GLES20.glDeleteProgram(it.id)
         }
+        frameProgram = null
+        downsampleProgram = null
+        blurProgram = null
         listOfNotNull(reticleProgram, shapeProgram, glowProgram).forEach {
             GLES20.glDeleteProgram(it.id)
         }
@@ -564,11 +757,17 @@ class CardboardOverlayRenderer(
             GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bitmap)
         }
         frameAspect = bitmap.width.toFloat() / bitmap.height
+        blurUpToDate = false
     }
 
     private fun buildUiProgram(fragmentSource: String): UiProgram? {
         val id = buildProgram(UI_VERTEX_SHADER, fragmentSource)
         return if (id == 0) null else UiProgram(id)
+    }
+
+    private fun buildTexturedProgram(fragmentSource: String): TexturedProgram? {
+        val id = buildProgram(VERTEX_SHADER, fragmentSource)
+        return if (id == 0) null else TexturedProgram(id)
     }
 
     private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
@@ -629,14 +828,19 @@ class CardboardOverlayRenderer(
             1f, 0f
         )
 
+        // vQuadX va de 0 a 1 a lo ancho del quad, para lo que dependa de la posición dentro de él.
         const val VERTEX_SHADER = """
             attribute vec2 aPosition;
             attribute vec2 aTexCoord;
             uniform vec2 uScale;
             uniform vec2 uOffset;
+            uniform vec2 uTexScale;
+            uniform vec2 uTexOffset;
             varying vec2 vTexCoord;
+            varying float vQuadX;
             void main() {
-                vTexCoord = aTexCoord;
+                vTexCoord = aTexCoord * uTexScale + uTexOffset;
+                vQuadX = aTexCoord.x;
                 gl_Position = vec4(aPosition * uScale + uOffset, 0.0, 1.0);
             }
         """
@@ -648,6 +852,46 @@ class CardboardOverlayRenderer(
             varying vec2 vTexCoord;
             void main() {
                 gl_FragColor = texture2D(uTexture, vTexCoord) * uAlpha;
+            }
+        """
+
+        // Promedia 4 x 4 muestras separadas por uTexel alrededor del centro de cada píxel de destino.
+        const val DOWNSAMPLE_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D uTexture;
+            uniform vec2 uTexel;
+            varying vec2 vTexCoord;
+            void main() {
+                vec4 sum = vec4(0.0);
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 4; j++) {
+                        sum += texture2D(uTexture, vTexCoord + (vec2(float(i), float(j)) - 1.5) * uTexel);
+                    }
+                }
+                gl_FragColor = sum / 16.0;
+            }
+        """
+
+        // Suaviza la copia chica con un filtro de 3 x 3 píxeles (pesos 1-2-1), la oscurece con uAlpha
+        // y la apaga hacia los costados del quad en una fracción uEdgeFade de su ancho.
+        const val BLUR_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D uTexture;
+            uniform vec2 uTexel;
+            uniform float uAlpha;
+            uniform float uEdgeFade;
+            varying vec2 vTexCoord;
+            varying float vQuadX;
+            void main() {
+                vec4 sum = vec4(0.0);
+                for (int i = -1; i <= 1; i++) {
+                    for (int j = -1; j <= 1; j++) {
+                        float weight = (2.0 - abs(float(i))) * (2.0 - abs(float(j)));
+                        sum += weight * texture2D(uTexture, vTexCoord + vec2(float(i), float(j)) * uTexel);
+                    }
+                }
+                float fade = smoothstep(0.0, uEdgeFade, vQuadX) * smoothstep(0.0, uEdgeFade, 1.0 - vQuadX);
+                gl_FragColor = vec4((sum / 16.0).rgb * uAlpha * fade, 1.0);
             }
         """
 
@@ -672,6 +916,19 @@ class CardboardOverlayRenderer(
         const val BAR_BORDER_ALPHA = 0.28f
         const val BAR_BORDER_PX = 2f
         const val BUTTON_HOVER_ALPHA = 0.22f
+        const val BUTTON_ACTIVE_ALPHA = 0.3f
+
+        /** Ancho de la copia chica del frame de donde sale el fondo desenfocado. */
+        const val BLUR_WIDTH_PX = 32
+
+        /** Brillo del fondo desenfocado respecto de la imagen (1 = igual de brillante). */
+        const val BLUR_BRIGHTNESS = 0.5f
+
+        /** Fracción del ancho del ojo en la que el fondo desenfocado se apaga hacia cada costado. */
+        const val BLUR_EDGE_FADE_FRACTION = 0.3f
+
+        /** Cuánto más alta se ve una imagen vertical que la misma pantalla en horizontal. */
+        const val PORTRAIT_HEIGHT_RATIO = 1.1f
 
         /** Radio del indicador de avance por borde, en píxeles de la pantalla capturada. */
         const val INDICATOR_RADIUS_PX = 48f

@@ -4,12 +4,13 @@ import android.content.ComponentName
 
 /**
  * Lo que el panel recuerda durante la sesión actual del visor: las apps abiertas, de la más reciente a
- * la más vieja, y las que hay que abrir en una tarea propia.
+ * la más vieja, las que hay que abrir en una tarea propia y las que solo funcionan en vertical.
  */
 object SessionApps {
 
     private val used = mutableListOf<ComponentName>()
     private val ownTask = mutableSetOf<ComponentName>()
+    private val portraitOnly = mutableSetOf<String>()
 
     /** Registra que se abrió [component]; pasa a ser la más reciente. */
     @Synchronized
@@ -32,10 +33,21 @@ object SessionApps {
     @Synchronized
     fun needsOwnTask(component: ComponentName): Boolean = component in ownTask
 
+    /** Registra que la app de [packageName] solo funciona en vertical. */
+    @Synchronized
+    fun markPortraitOnly(packageName: String) {
+        portraitOnly.add(packageName)
+    }
+
+    /** Si la app de [packageName] solo funciona en vertical. */
+    @Synchronized
+    fun isPortraitOnly(packageName: String): Boolean = packageName in portraitOnly
+
     /** Olvida lo registrado; se llama al terminar la sesión del visor. */
     @Synchronized
     fun clear() {
         used.clear()
         ownTask.clear()
+        portraitOnly.clear()
     }
 }

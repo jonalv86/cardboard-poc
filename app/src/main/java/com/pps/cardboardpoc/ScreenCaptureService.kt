@@ -69,6 +69,9 @@ class ScreenCaptureService : Service() {
     /** Si la sesión lee una pantalla virtual propia, vía Shizuku, en vez de la proyección. */
     private var virtualMode = false
     private var shizukuDisplay: ShizukuDisplay? = null
+
+    /** Pasa a vertical las apps que solo funcionan así. Solo existe con la pantalla virtual. */
+    private var portraitAppDetector: PortraitAppDetector? = null
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var displayListener: DisplayManager.DisplayListener? = null
@@ -109,6 +112,8 @@ class ScreenCaptureService : Service() {
                 )
                 startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
             }
+
+            ACTION_SET_PORTRAIT -> setPortrait(intent.getBooleanExtra(EXTRA_PORTRAIT, false))
 
             ACTION_STOP -> stopSelf()
         }
@@ -220,6 +225,10 @@ class ScreenCaptureService : Service() {
         }
         JoystickManager.targetDisplayId = display.displayId
         registerDisplayListener()
+        portraitAppDetector = PortraitAppDetector(host, mainHandler) { portraitOnly ->
+            frontAppPortraitOnly = portraitOnly
+            if (portraitOnly) setPortrait(true)
+        }.also { it.start() }
         PanelActivity.show(host, openPackage)
     }
 
@@ -243,6 +252,18 @@ class ScreenCaptureService : Service() {
             Log.d(TAG, "se eligió CeluVR: se abre el panel")
             JoystickManager.accessibilityService?.let { PanelActivity.show(it) }
         }
+    }
+
+    /**
+     * Pasa la pantalla virtual a vertical o la devuelve a horizontal. Las apps que corren en ella
+     * reciben el cambio como una rotación. Con la proyección no hace nada: la pantalla física la fija
+     * en horizontal la ventana estéreo.
+     */
+    private fun setPortrait(enabled: Boolean) {
+        if (!virtualMode || portraitState.value == enabled) return
+        Log.d(TAG, "pantalla virtual: vertical=$enabled")
+        portraitState.value = enabled
+        rebuildCapture()
     }
 
     private fun isOwnTaskVisible(): Boolean {
@@ -281,8 +302,11 @@ class ScreenCaptureService : Service() {
         val thread = captureThread ?: return
 
         val metrics = currentDisplayMetrics()
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
+        val longSide = maxOf(metrics.widthPixels, metrics.heightPixels)
+        val shortSide = minOf(metrics.widthPixels, metrics.heightPixels)
+        val portrait = virtualMode && portraitState.value
+        val width = if (portrait) shortSide else metrics.widthPixels
+        val height = if (portrait) longSide else metrics.heightPixels
         if (width == captureWidth && height == captureHeight) return
 
         captureWidth = width
@@ -292,13 +316,8 @@ class ScreenCaptureService : Service() {
         // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
         // reader cerrado, la captura se corta.
         virtualDisplay?.setSurface(null)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) shizukuDisplay?.setSurface(null)
 
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        synchronized(captureLock) {
-            imageReader?.close()
-            imageReader = reader
-        }
         reader.setOnImageAvailableListener({ source ->
             // El main thread cierra el reader al rotar o al detener la captura. Con el lock tomado
             // el reader no se puede cerrar a mitad de la copia, y uno ya reemplazado se descarta.
@@ -315,6 +334,9 @@ class ScreenCaptureService : Service() {
             checkFullScreenChoice(bitmap)
             if (capturedTaskVisible) mainHandler.post { overlay?.updateFrame(bitmap) }
         }, Handler(thread.looper))
+        val previousReader = synchronized(captureLock) {
+            imageReader.also { imageReader = reader }
+        }
 
         val screen = currentDisplayMetrics()
         Log.d(
@@ -327,9 +349,12 @@ class ScreenCaptureService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 updateShizukuDisplay(reader, width, height, metrics.densityDpi)
             }
+            // La pantalla virtual ya escribe sobre el reader nuevo: el viejo se puede cerrar.
+            synchronized(captureLock) { previousReader?.close() }
             return
         }
 
+        synchronized(captureLock) { previousReader?.close() }
         val display = virtualDisplay
         if (display == null) {
             virtualDisplay = projection.createVirtualDisplay(
@@ -343,13 +368,18 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    /** Crea la pantalla virtual sobre [reader], o la reajusta al tamaño nuevo. */
+    /**
+     * Crea la pantalla virtual sobre [reader], o la reajusta al tamaño nuevo. La superficie nueva va
+     * antes del cambio de tamaño: las apps redibujan al recibirlo, y con la pantalla quieta ese
+     * redibujado es el único frame que llega; si cae antes de tener superficie, se pierde y el visor
+     * queda congelado.
+     */
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun updateShizukuDisplay(reader: ImageReader, width: Int, height: Int, densityDpi: Int) {
         val display = shizukuDisplay
         if (display != null) {
-            display.resize(width, height, densityDpi)
             display.setSurface(reader.surface)
+            display.resize(width, height, densityDpi)
             return
         }
         shizukuDisplay = try {
@@ -468,7 +498,12 @@ class ScreenCaptureService : Service() {
                 Log.w(TAG, "pantalla virtual: no se pudo liberar", e)
             }
         }
+        val detector = portraitAppDetector
+        portraitAppDetector = null
+        if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
+        frontAppPortraitOnly = false
         virtualMode = false
+        portraitState.value = false
         JoystickManager.targetDisplayId = Display.DEFAULT_DISPLAY
 
         synchronized(captureLock) {
@@ -560,7 +595,9 @@ class ScreenCaptureService : Service() {
         private const val ACTION_START = "com.pps.cardboardpoc.action.START_CAPTURE"
         private const val ACTION_STOP = "com.pps.cardboardpoc.action.STOP_CAPTURE"
         private const val ACTION_START_VIRTUAL = "com.pps.cardboardpoc.action.START_VIRTUAL"
+        private const val ACTION_SET_PORTRAIT = "com.pps.cardboardpoc.action.SET_PORTRAIT"
         private const val EXTRA_OPEN_PACKAGE = "open_package"
+        private const val EXTRA_PORTRAIT = "portrait"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
 
@@ -625,6 +662,26 @@ class ScreenCaptureService : Service() {
             Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_START_VIRTUAL
                 putExtra(EXTRA_OPEN_PACKAGE, openPackage)
+            }
+
+        private val portraitState = MutableStateFlow(false)
+
+        /** Si la pantalla virtual del visor está en vertical. Con la proyección es siempre false. */
+        val portrait: StateFlow<Boolean> = portraitState
+
+        /**
+         * Si la app al frente en la pantalla virtual solo funciona en vertical: se la muestra así y no
+         * se la puede pasar a horizontal. Lo lee el hilo de render para armar la barra.
+         */
+        @Volatile
+        var frontAppPortraitOnly = false
+            private set
+
+        /** Intent que pasa la pantalla virtual a vertical, o la devuelve a horizontal. */
+        fun portraitIntent(context: Context, enabled: Boolean): Intent =
+            Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_SET_PORTRAIT
+                putExtra(EXTRA_PORTRAIT, enabled)
             }
 
         /** Intent que detiene la captura y baja el service. */
