@@ -1,5 +1,6 @@
 package com.pps.cardboardpoc
 
+import android.view.Display
 import kotlin.math.hypot
 
 /**
@@ -12,10 +13,30 @@ import kotlin.math.hypot
 object ControlBar {
 
     /** Botones que puede llevar la barra. */
-    enum class Button { HOME }
+    enum class Button {
+        /** Vuelve al panel de apps. */
+        HOME,
 
-    /** Botones de la barra, de izquierda a derecha. */
-    val buttons: List<Button> = listOf(Button.HOME)
+        /** Pasa la app a vertical, o la devuelve a horizontal. */
+        PORTRAIT
+    }
+
+    /**
+     * Botones de la barra, de izquierda a derecha. Vertical solo aparece con la pantalla virtual, la
+     * única que se puede poner en vertical, y cuando la orientación se puede elegir: no sobre el
+     * panel, que siempre se ve en horizontal, ni sobre una app que solo funciona en vertical.
+     */
+    val buttons: List<Button>
+        get() = if (JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY &&
+            !PanelActivity.isInFront && !ScreenCaptureService.frontAppPortraitOnly
+        ) {
+            WITH_PORTRAIT
+        } else {
+            HOME_ONLY
+        }
+
+    private val HOME_ONLY = listOf(Button.HOME)
+    private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT)
 
     /** Diámetro de cada botón. */
     const val BUTTON_DIAMETER_PX = 112f

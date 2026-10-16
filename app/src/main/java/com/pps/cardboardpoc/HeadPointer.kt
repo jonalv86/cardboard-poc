@@ -28,8 +28,11 @@ class HeadPointer {
 
     private var handledRecenters = JoystickManager.recenterCount
 
-    /** Lee la orientación de la cabeza del cuadro actual. */
-    fun update(headTransform: HeadTransform) {
+    /**
+     * Lee la orientación de la cabeza del cuadro actual. [imageWidthFraction] es la parte del ancho del
+     * ojo que ocupa la imagen: 1 en horizontal, menos en vertical.
+     */
+    fun update(headTransform: HeadTransform, imageWidthFraction: Float) {
         // Los primeros cuadros pueden llegar antes de que la fusión de sensores se asiente; tomar el
         // frente ahí lo dejaría corrido.
         if (framesSeen++ < WARMUP_FRAMES) {
@@ -66,8 +69,11 @@ class HeadPointer {
 
         // El yaw crece al girar a la izquierda y el pitch al mirar arriba; en pantalla, x crece a la
         // derecha e y hacia abajo. Los dos ejes usan la misma escala para que el giro se sienta igual
-        // en cualquier dirección.
-        val pixelsPerRadian = JoystickManager.screenWidth / Math.toRadians(FULL_WIDTH_DEGREES).toFloat()
+        // en cualquier dirección. La escala va por el ancho del ojo y no por el de la imagen: una imagen
+        // vertical no llena el ojo a lo ancho, y el cursor tiene que acompañar a la cabeza igual que en
+        // horizontal.
+        val eyeWidthPx = JoystickManager.screenWidth / imageWidthFraction.coerceIn(0.05f, 1f)
+        val pixelsPerRadian = eyeWidthPx / Math.toRadians(FULL_WIDTH_DEGREES).toFloat()
         val offsetX = -smoothedYaw * pixelsPerRadian
         val offsetY = -smoothedPitch * pixelsPerRadian
         JoystickManager.setHeadOffset(offsetX, offsetY)
@@ -87,7 +93,7 @@ class HeadPointer {
         private const val WARMUP_FRAMES = 30
         private const val LOG_EVERY_N_FRAMES = 60
 
-        /** Giro de la cabeza, en grados, que lleva el cursor de un borde lateral de la pantalla al otro. */
+        /** Giro de la cabeza, en grados, que lleva el cursor de un costado del ojo al otro. */
         private const val FULL_WIDTH_DEGREES = 80.0
 
         /**

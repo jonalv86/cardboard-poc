@@ -80,6 +80,11 @@ class PanelActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        isInFront = false
+    }
+
     override fun onStop() {
         super.onStop()
         // La app abierta llegó a tapar el panel: si el panel vuelve, es porque el usuario volvió. Un
@@ -94,6 +99,11 @@ class PanelActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        isInFront = true
+        // El panel está pensado en horizontal: en una pantalla vertical el sistema lo encaja chico.
+        if (ScreenCaptureService.portrait.value) {
+            startService(ScreenCaptureService.portraitIntent(this, false))
+        }
         reopenIfClosedOnLaunch()
         openRequestedPackage()
         // Se recalcula al volver para que la app recién usada pase adelante.
@@ -201,6 +211,11 @@ class PanelActivity : ComponentActivity() {
 
         /** Margen para que el aviso de visibilidad de la tarea capturada llegue después de traer el panel. */
         private const val CAPTURE_CHECK_DELAY_MS = 500L
+
+        /** Si el panel está al frente. Lo lee el hilo de render para armar la barra de controles. */
+        @Volatile
+        var isInFront = false
+            private set
 
         /** App que el panel abre apenas vuelve al frente, como si se la hubiera elegido ahí. */
         private const val EXTRA_OPEN_PACKAGE = "open_package"

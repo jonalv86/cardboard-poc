@@ -381,6 +381,7 @@ object JoystickManager {
         ) {
             when (ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)) {
                 ControlBar.Button.HOME -> showPanel()
+                ControlBar.Button.PORTRAIT -> togglePortrait()
                 null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
             }
             return
@@ -411,6 +412,18 @@ object JoystickManager {
         val service = accessibilityService ?: return
         Log.d(TAG, "Inicio: vuelve al panel")
         PanelActivity.show(service)
+    }
+
+    /**
+     * Pasa la app a la vista a vertical, o la devuelve a horizontal. Fuera de la captura, o con una app
+     * que solo funciona en vertical, no hace nada.
+     */
+    fun togglePortrait() {
+        if (!ScreenCaptureService.isCapturing || ScreenCaptureService.frontAppPortraitOnly) return
+        val service = accessibilityService ?: return
+        val portrait = !ScreenCaptureService.portrait.value
+        Log.d(TAG, "Vertical: $portrait")
+        service.startService(ScreenCaptureService.portraitIntent(service, portrait))
     }
 
     /**

@@ -165,7 +165,8 @@ class MainActivity : ComponentActivity() {
      * Atajos para manejar el visor por adb en las pruebas, solo en compilaciones depurables y con el
      * visor andando: [EXTRA_DEBUG_OPEN] abre una app desde el panel como si se la eligiera ahí, y
      * [EXTRA_DEBUG_HOME] vuelve al panel como el botón "Inicio". [EXTRA_DEBUG_VIRTUAL] arranca el
-     * visor sobre la pantalla virtual de Shizuku, con [EXTRA_DEBUG_OPEN] opcional.
+     * visor sobre la pantalla virtual de Shizuku, con [EXTRA_DEBUG_OPEN] opcional, y
+     * [EXTRA_DEBUG_PORTRAIT] pasa esa pantalla a vertical o la vuelve a horizontal.
      */
     private fun handleDebugCommand(intent: Intent) {
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) return
@@ -178,6 +179,14 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (!ScreenCaptureService.isCapturing) return
+        if (intent.hasExtra(EXTRA_DEBUG_PORTRAIT)) {
+            startService(
+                ScreenCaptureService.portraitIntent(
+                    this, intent.getBooleanExtra(EXTRA_DEBUG_PORTRAIT, false)
+                )
+            )
+            return
+        }
         val packageToOpen = intent.getStringExtra(EXTRA_DEBUG_OPEN)
         when {
             packageToOpen != null -> PanelActivity.show(this, packageToOpen)
@@ -252,6 +261,9 @@ class MainActivity : ComponentActivity() {
 
         /** Con true arranca el visor sobre la pantalla virtual de Shizuku (atajo de prueba por adb). */
         const val EXTRA_DEBUG_VIRTUAL = "pantalla_virtual"
+
+        /** Con true pasa la pantalla virtual a vertical y con false la vuelve a horizontal (atajo de prueba por adb). */
+        const val EXTRA_DEBUG_PORTRAIT = "vertical"
 
         const val SHIZUKU_REQUEST_CODE = 1
         const val TAG = "CardboardCapture"
