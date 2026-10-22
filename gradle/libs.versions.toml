@@ -15,6 +15,9 @@ activityCompose = "1.8.0"
 composeBom = "2023.08.00"
 shizuku = "13.1.5"
 hiddenApiBypass = "6.1"
+libadb = "3.1.1"
+sunSecurity = "1.1"
+conscrypt = "2.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -39,6 +42,9 @@ protobuf-javalite = { group = "com.google.protobuf", name = "protobuf-javalite",
 shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
 shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 hiddenapibypass = { group = "org.lsposed.hiddenapibypass", name = "hiddenapibypass", version.ref = "hiddenApiBypass" }
+libadb-android = { group = "com.github.MuntashirAkon", name = "libadb-android", version.ref = "libadb" }
+sun-security-android = { group = "com.github.MuntashirAkon", name = "sun-security-android", version.ref = "sunSecurity" }
+conscrypt-android = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscrypt" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

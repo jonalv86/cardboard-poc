@@ -6,6 +6,15 @@
     <!-- La sesión sobre pantalla virtual no usa MediaProjection y necesita otro tipo de servicio. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- El cliente adb embebido abre un socket contra el adbd local (depuración inalámbrica). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Para encender la depuración inalámbrica sola al tocar INICIAR. WRITE_SECURE_SETTINGS no se
+         concede con un diálogo: CeluVR se lo concede a sí misma por adb (pm grant) la primera vez que
+         conecta, y de ahí en más puede encender la depuración inalámbrica sin la computadora. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
     <!-- El Cardboard SDK declara estos permisos para escanear el QR del visor y detectarlo por
          NFC. Sin perfil de visor el SDK usa los parámetros de Cardboard V1, así que nada de eso
          corre y el usuario no tiene por qué ver un pedido de cámara. -->
@@ -66,6 +75,15 @@
             android:exported="true"
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Recibe el binder del proceso servidor propio (lanzado con app_process por adb). El servidor
+             corre como shell; el provider valida que quien llama sea shell. -->
+        <provider
+            android:name=".vdisplay.VDisplayReceiverProvider"
+            android:authorities="${applicationId}.vdisplay"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false" />
 
         <service
             android:name=".JoystickAccessibilityService"

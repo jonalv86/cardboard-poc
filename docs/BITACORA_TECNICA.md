@@ -15,6 +15,7 @@
 - [Navegación entre apps](#navegacion)
 - [Capturas de pantalla y elegir la app en el selector](#ajustes-visor)
 - [Pantalla virtual con Shizuku: todas las apps fluidas](#pantalla-virtual)
+- [Servidor propio y autoconexión: sin Shizuku ni computadora](#servidor-propio)
 - [Rediseño visual: retícula, bordes y barra flotante](#rediseno-visual)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
@@ -1112,6 +1113,150 @@ Para ver qué hay en la pantalla virtual: `adb shell dumpsys activity activities
 
 ---
 
+<a id="servidor-propio"></a>
+## Servidor propio y autoconexión: sin Shizuku ni computadora
+
+**Fecha:** 21 y 22 de octubre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16).
+
+### Por qué
+
+La pantalla virtual con Shizuku resolvió la fluidez, pero deja dos fricciones: hay que instalar una
+app aparte (Shizuku) y reiniciar su servicio después de cada reinicio del celular. El objetivo de este
+hito fue sacarse la dependencia de encima — que CeluVR haga todo sola, sin otra app y, en lo posible,
+sin computadora.
+
+### El servidor propio reemplaza a Shizuku
+
+Shizuku, al final, lo único que nos prestaba eran los permisos de adb para crear la pantalla virtual
+**confiable** (la que deja abrir apps ajenas; ver "Pantalla virtual con Shizuku"). Eso mismo lo hace
+`scrcpy` con un proceso servidor que se lanza con `app_process`. Así que CeluVR trae ahora su propio
+servidor: un proceso que se arranca con `app_process` y corre con los permisos de adb (usuario shell),
+crea la misma pantalla confiable y solo le responde a CeluVR. Hace una sola cosa, a diferencia del
+servidor de Shizuku, que reenvía cualquier llamada al sistema.
+
+- **Clases nuevas** (`com.pps.cardboardpoc.vdisplay`): `VDisplayServer` (el proceso servidor),
+  `VDisplayReceiverProvider` (recibe el binder del servidor) y `VDisplayConnection` (lo guarda). Del
+  lado del pipeline, `ServerDisplay` y la interfaz `VirtualDisplayBackend`, que implementan tanto
+  `ShizukuDisplay` como `ServerDisplay`: la captura maneja la pantalla igual sin importar quién presta
+  los permisos. La interfaz entre app y servidor es un AIDL (`IVDisplayServer`).
+- El servidor se lanza con `CLASSPATH=<base.apk> app_process / com.pps.cardboardpoc.vdisplay.VDisplayServer`
+  (la ruta del APK sale de `applicationInfo.sourceDir`).
+
+**Dos escollos del servidor:**
+
+1. **El Looper.** En One UI hay que llamar `Looper.prepareMainLooper()` **antes** de
+   `ActivityThread.systemMain()`: ese `systemMain` construye un `Handler` en el constructor del
+   ActivityThread y, sin el looper preparado, aborta con *"Can't create handler inside thread ... that
+   has not called Looper.prepare()"*.
+2. **Entregar el binder.** El servidor le pasa su binder a la app a través del provider de CeluVR, pero
+   el camino común (`getContentProvider`) exige que el paquete del contexto coincida con el uid: como el
+   servidor corre como shell, ese paquete sería `"android"`, de otro uid, y el sistema lo rechaza con
+   *"Given calling package android does not match caller's uid 2000"*. La salida es
+   `IActivityManager.getContentProviderExternal`, que usa un permiso que shell sí tiene — es lo que hace
+   scrcpy.
+
+### Autoconexión desde el propio celular (sin computadora)
+
+Crear la pantalla sigue necesitando los permisos de adb, y esos solo se habilitan desde la depuración
+inalámbrica; esa barrera no se puede saltar sin root. Lo que sí se puede es que CeluVR sea su **propio
+cliente adb**: se conecta al adbd local (el de la depuración inalámbrica), se empareja una vez con el
+código que muestra el sistema, y lanza el servidor por un *shell stream*. No hace falta la computadora
+ni Shizuku. Es lo que hace la app LADB, con la librería **libadb-android**.
+
+- **Clases nuevas** (`com.pps.cardboardpoc.adb`): `AdbConnectionManager` (la identidad adb de CeluVR —
+  clave RSA y certificado, guardados para que el emparejamiento persista) y `AdbServerLauncher`
+  (descubre el adbd por mDNS, empareja, conecta y lanza el servidor por el stream). Dependencias:
+  `libadb-android` y `sun-security-android` (JitPack) y `conscrypt-android` (Maven Central).
+
+**Tres escollos de la autoconexión:**
+
+1. **El Conscrypt de la plataforma.** El TLS del emparejamiento usa `exportKeyingMaterial`, y en
+   Android 16 el Conscrypt del sistema ya no expone esa función con la firma que libadb espera: tira
+   `NoSuchMethodException: com.android.org.conscrypt.Conscrypt.exportKeyingMaterial`. Con la dependencia
+   `conscrypt-android` en el classpath, libadb detecta ese Conscrypt propio y lo usa en lugar del de la
+   plataforma. Es el bug más engañoso: el handshake TLS "funciona" y recién falla al derivar la clave.
+2. **El host del pairing.** `AndroidUtils.getHostIpAddress` devolvía `127.0.0.1`, y el emparejamiento
+   iba a loopback: `ECONNREFUSED`, porque el servicio de vinculación escucha en la IP de la Wi-Fi, no en
+   loopback. El host y el puerto hay que tomarlos del callback de `AdbMdns` mientras el diálogo del
+   sistema está abierto; si el anuncio no trae host, se cae a la IPv4 local.
+3. **El diálogo solo anuncia en primer plano.** En este Samsung, el diálogo "Vincular dispositivo con
+   código" solo publica su servicio mientras está adelante: al volver a CeluVR para tipear el código, el
+   diálogo se va a segundo plano, deja de anunciar y el puerto cambia. Por eso no alcanza con un campo de
+   texto adentro de la app.
+
+### La ventanita de emparejamiento (overlay de accesibilidad)
+
+Por el tercer escollo, el código se escribe sin salir del diálogo del sistema: CeluVR muestra una
+**ventanita flotante con teclado numérico propio** (`PairingOverlay`) que queda encima del diálogo, y
+empareja por detrás mientras ese diálogo sigue adelante anunciando su servicio. El detalle clave es el
+**tipo de ventana**: tiene que ser `TYPE_ACCESSIBILITY_OVERLAY` (la agrega el servicio de accesibilidad),
+NO `TYPE_APPLICATION_OVERLAY`. El diálogo de vinculación es una pantalla de seguridad y **oculta los
+overlays de aplicación** (anti-tapjacking; se ve `setForceHideNonSystemOverlayWindow` en el log), pero no
+los de accesibilidad, que son de confianza. Como lo agrega el servicio de accesibilidad, además no hace
+falta el permiso `SYSTEM_ALERT_WINDOW`.
+
+### Configuración explícita y auto-encendido
+
+El emparejamiento quedó **explícito**, separado de "Iniciar". Antes, "Iniciar" mostraba la ventanita la
+primera vez (o cuando el adbd rechazaba la clave), y eso sorprendía: tras desvincular CeluVR del lado del
+sistema, "Iniciar" seguía pidiendo emparejar aunque se apagaran la depuración inalámbrica y las opciones de
+desarrollador —CeluVR volvía a encender la depuración sola y la clave vieja, ya rechazada, caía en "hay que
+emparejar". Ahora un **flag persistente `configured`** (en `SharedPreferences`) decide: "Iniciar" solo
+intenta por adb si el modo fluido está configurado; si no, usa la captura normal y **nunca** muestra la
+ventanita. La configuración se dispara a mano desde **Acerca de › Modo fluido**, con el botón **"Configurar
+modo fluido"** (abre la ventanita y empareja) y su inverso **"Olvidar emparejamiento"** (borra el flag y la
+identidad adb, y apaga la depuración inalámbrica). `PairingOverlay` solo se crea desde "Configurar"; ningún
+camino de "Iniciar" puede llegar a él.
+
+**Auto-encendido de la depuración inalámbrica.** En la primera conexión, CeluVR se concede
+`WRITE_SECURE_SETTINGS` por su propio shell adb (`pm grant`, permiso de nivel *development* que shell puede
+otorgar y que persiste entre reinicios). Con ese permiso, de ahí en más enciende la depuración inalámbrica
+sola (escribe `adb_wifi_enabled=1`) al tocar "Iniciar": después de reiniciar el celular no queda ningún
+paso manual. El Wi-Fi solo hace falta para que el adbd arranque (sirve un hotspot; no necesita internet).
+
+**Anda con las opciones de desarrollador apagadas.** El daemon de la depuración inalámbrica (el `TlsServer`
+del adbd) obedece al setting `adb_wifi_enabled`, no al master de opciones de desarrollador: con
+`development_settings_enabled=0`, escribir `adb_wifi_enabled=1` igual lo levanta (en el log: `adbwifi started
+on port 43783` y `Acquired multicast lock` para el anuncio mDNS). Así que el modo fluido sigue funcionando
+con las opciones de desarrollador apagadas —por Shizuku (proceso privilegiado que vive hasta reiniciar) y por
+el servidor propio (CeluVR reenciende la depuración y la clave emparejada persiste en el keystore del adbd).
+Salvedad: en equipos con Knox/MDM el adb puede estar más atado al modo desarrollador.
+
+### Qué queda igual, qué queda pendiente
+
+- La pantalla es la misma confiable de antes; los gestos, el panel y Atrás siguen usando
+  `GestureDescription.setDisplayId` y `ActivityOptions.setLaunchDisplayId`, sin Shizuku.
+- El video con DRM (Netflix y similares) sigue saliendo negro, y se usan interfaces ocultas de Android
+  (probado solo en Android 16).
+- Shizuku quedó como camino alternativo: si está corriendo, se usa; si no, se usa el servidor propio.
+- El servidor lanzado por adb muere al cortar la conexión; la autoconexión lo resuelve mientras CeluVR
+  esté conectada. La reactivación tras reiniciar el celular quedó **automatizada** (ver "Configuración
+  explícita y auto-encendido"): CeluVR se concede `WRITE_SECURE_SETTINGS` una vez y enciende la depuración
+  inalámbrica sola.
+
+### En la app
+
+"Iniciar" sin Shizuku toma este camino solo si el modo fluido está **configurado**: conecta al adbd local
+y lanza el servidor; si no, cae a la captura normal (nunca muestra la ventanita). La pantalla principal
+tiene un chip **"Modo fluido" / "Modo normal"** según esté activo, y el **Acerca de** una sección
+desplegable "Modo fluido (opcional)" que, según el estado, muestra los pasos con el botón "Configurar modo
+fluido" o la confirmación con "Olvidar emparejamiento". El paso a paso para el usuario está en el README
+("Videos y juegos fluidos").
+
+### Setup (una vez por celular)
+
+1. Activar opciones de desarrollador y la **depuración inalámbrica**.
+2. En CeluVR, ir a **Acerca de › Modo fluido** y tocar **"Configurar modo fluido"**; abrir "Vincular
+   dispositivo con código de vinculación" y, con ese diálogo abierto, tipear el código de 6 dígitos en la
+   ventanita.
+3. Después de cada reinicio **no** hay paso manual: CeluVR reenciende la depuración inalámbrica sola al
+   tocar "Iniciar" (el emparejamiento persiste).
+
+Validado de punta a punta en el SM-S938B: emparejó y YouTube abrió en el display confiable creado por el
+servidor propio, todo desde el celular.
+
+---
+
 <a id="rediseno-visual"></a>
 ## Rediseño visual: retícula, bordes y barra flotante
 
@@ -1309,6 +1454,11 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [x] **Capturas de pantalla con el visor andando**, que destraban la evidencia visual para el informe.
 - [x] **Una app elegida en el selector se ve directo y fluida**, sin el panel encima.
 - [x] **Todas las apps fluidas desde el panel, con Shizuku activo** (pantalla virtual propia).
+- [x] **Servidor propio sin Shizuku:** CeluVR crea la pantalla confiable con su propio proceso
+      `app_process`, sin la app Shizuku (ver "Servidor propio y autoconexión").
+- [x] **Autoconexión desde el celular, sin computadora:** CeluVR se empareja con el adbd local (setup
+      explícito desde "Acerca de › Modo fluido") y lanza el servidor sola; reenciende la depuración
+      inalámbrica por su cuenta tras reiniciar.
 
 **Lo que sigue ahora:**
 
@@ -1324,8 +1474,9 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [ ] Afinar la óptica. Primero lo barato: ajustar con una regla las dos ruedas del VR BOX a lo
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.
-- [ ] Después de la demo, decidir si la pantalla virtual con Shizuku reemplaza a la captura o queda
-      como modo opcional, y si su configuración es aceptable para el uso real.
+- [ ] La pantalla virtual (hoy servidor propio, Shizuku como alternativa) quedó como **modo opcional**
+      sobre la captura. Falta decidir si su configuración es aceptable para el uso real. El encendido de la
+      depuración inalámbrica tras reiniciar ya quedó automatizado (`WRITE_SECURE_SETTINGS`, probado).
 
 **Del proyecto en general:**
 

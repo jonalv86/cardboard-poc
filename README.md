@@ -18,7 +18,8 @@ Desarrollado como Práctica Profesional Supervisada.
 | 1 | Captura de pantalla en tiempo real | Funcional |
 | 1.5 | Ventana flotante que sobrevive a que la app pase a segundo plano | Funcional |
 | 2 | Renderizado estéreo con Cardboard SDK: distorsión de lente + head tracking | Funcional |
-| 3 | Interacción — poder accionar sobre la app capturada | Pendiente |
+| 3 | Interacción: accionar sobre la app capturada con el control | Funcional |
+| 4 | Navegación entre apps y modo fluido (fps completos, sin computadora) | Funcional |
 
 ---
 
@@ -71,50 +72,47 @@ rompen. Las versiones fijadas hoy —Gradle 8.9, plugin 8.7.3— son las que est
 ## Cómo usarlo
 
 1. Poné el celular **en horizontal antes de abrir la app**. Todo el flujo lo asume.
-2. Abrí CeluVR y tocá **Iniciar captura**.
-3. La primera vez te va a mandar a Ajustes a habilitar *"Mostrar sobre otras apps"*. Es un permiso
-   que Android no concede con un diálogo simple.
-4. Elegí **"Una sola app"** y seleccioná la que querés ver en el visor.
+2. Abrí CeluVR y tocá **Iniciar**.
+3. La primera vez te va a mandar a Ajustes a activar el servicio de accesibilidad
+   **"Control de CeluVR"**: es el que dibuja la vista estéreo y traduce el control.
+4. Elegí **"Una sola app"** y seleccioná la que querés ver en el visor (con el modo fluido activo este
+   paso no aparece: el panel se abre directo en el visor).
 5. Poné el celular en el visor, centrado con la **línea vertical** que se dibuja abajo.
 
 Para detener la captura, usá la notificación o el botón de la pantalla principal.
 
-### Videos y juegos fluidos (opcional, con Shizuku)
+### Videos y juegos fluidos (modo fluido, opcional)
 
-**Shizuku es solo para que los videos y los juegos se vean fluidos.** Sin Shizuku el visor funciona
-igual, pero la mayoría de las apps de video y de juegos abiertas desde el panel se ven a unos 3 cuadros
-por segundo y sin video. Con Shizuku activo, todas se ven fluidas.
+Por defecto, desde el panel la mayoría de las apps de video y de juegos se ven a unos 3 cuadros por
+segundo y sin video. El **modo fluido** las muestra a máxima velocidad, abriéndolas en una pantalla
+virtual propia. Es opcional: sin él, el visor funciona igual y todo lo demás se ve bien.
 
-**Qué es Shizuku:** [Shizuku](https://shizuku.rikka.app/) es una app gratuita que le presta a otras
-apps los permisos de la depuración de Android (los de adb), sin root ni computadora. CeluVR los
-usa para abrir las apps en una pantalla virtual propia y mostrarlas en el visor sin pasar por la
-captura de pantalla. El detalle de por qué hace falta está en la bitácora, en "Pantalla virtual con
-Shizuku".
+**Cómo funciona:** crear esa pantalla necesita los permisos de la depuración de Android (adb). CeluVR
+los consigue **sola**, conectándose al adbd del propio celular por la depuración inalámbrica — no hace
+falta una computadora ni instalar otra app. (Si tenés [Shizuku](https://shizuku.rikka.app/) corriendo,
+también lo usa, pero ya no es necesario.) El detalle está en la bitácora, en "Servidor propio y
+autoconexión".
 
 **Una sola vez por celular:**
 
-1. Instalar **Shizuku** desde Play Store.
-2. Activar las opciones de desarrollador: Ajustes > Acerca del teléfono > Información de software >
+1. Activar las opciones de desarrollador: Ajustes > Acerca del teléfono > Información de software >
    tocar 7 veces "Número de compilación".
-3. Conectar el celular a Wi-Fi.
-4. Abrir Shizuku y tocar "Emparejar" en la sección de depuración inalámbrica. Aceptar el permiso de
-   notificaciones.
-5. Ir a Ajustes > Opciones de desarrollador > Depuración inalámbrica, activarla y tocar "Vincular
-   dispositivo con código de vinculación".
-6. Escribir ese código en la notificación de Shizuku.
-7. La primera vez que el visor arranque con Shizuku, elegir "Permitir todo el tiempo" en "¿Permitir a
-   CeluVR acceder a Shizuku?".
+2. Conectar el celular a una red Wi-Fi.
+3. Ir a Ajustes > Opciones de desarrollador > **Depuración inalámbrica** y activarla.
+4. Abrir CeluVR, ir a **Acerca de > Modo fluido (opcional)** y tocar **"Configurar modo fluido"**. Cuando
+   aparezca la ventanita, ir a Depuración inalámbrica > **"Vincular dispositivo con código de vinculación"**
+   y, con ese diálogo abierto, escribir el código de 6 dígitos en la ventanita. El emparejamiento queda
+   guardado. (Tocar **Iniciar** sin configurar nunca pide emparejar: usa la captura normal.)
 
-**Después de cada reinicio del celular, o si Shizuku se detuvo:**
+**Después de cada reinicio del celular:** no hay que hacer nada a mano. CeluVR vuelve a activar la
+**Depuración inalámbrica** sola al tocar Iniciar (el emparejamiento sigue valiendo; no hay que repetir el
+código). El Wi-Fi solo hace falta para que el adbd arranque: no necesita internet (sirve el hotspot de otro
+celular) y, una vez conectado, se puede cortar.
 
-1. Conectar el celular a Wi-Fi.
-2. Abrir Shizuku y tocar "Iniciar". Tiene que decir que está en ejecución.
-3. Abrir CeluVR: el texto tiene que empezar con "Shizuku está activo".
-
-Con Shizuku activo, **Iniciar visor** abre el panel directo en el visor, sin elegir nada en el selector.
-El Wi-Fi solo hace falta para arrancar Shizuku: no necesita internet (sirve el hotspot de otro
-celular, no el del mismo), y una vez andando se puede cortar. Si Shizuku se detiene, el visor vuelve
-al modo de siempre. El video con DRM (Netflix y similares) sale negro igual.
+Con el modo fluido activo, el chip de la pantalla principal dice **"Modo fluido"** y, al tocar Iniciar,
+el panel abre las apps directo en el visor a fps completos, sin pasar por el selector. El video con DRM
+(Netflix y similares) sale negro igual. Los pasos y la configuración (el botón **"Configurar modo fluido"**
+y, para revertirlo, **"Olvidar emparejamiento"**) están en la app, en **Acerca de > Modo fluido**.
 
 ### Recomendaciones para la prueba física
 
@@ -136,8 +134,6 @@ sensor lee bien.
 
 ## Qué no funciona todavía
 
-- **No se puede accionar sobre la app capturada.** La ventana flotante se come los toques. Es el
-  objetivo de la Fase 3.
 - **Las apps con DRM se ven en negro** (Netflix y similares). Es una protección del sistema
   operativo, no un error nuestro.
 - **Las apps que se fuerzan en vertical rompen la vista estéreo.** La app que está adelante decide
@@ -189,6 +185,9 @@ falla que deja el `.aar` incompleto de una forma que no se nota hasta que la app
 celular. El parche necesario está explicado en la Fase 2 de la bitácora.
 
 ## Íconos
+
+El ícono de la app (`ic_celuvr_logo`, `ic_launcher_foreground` y las variantes monocromas) es un
+visor de VR propio del proyecto.
 
 Los íconos de la barra del visor (`app/src/main/res/drawable/ic_*_rounded.xml`) son
 [Material Symbols](https://github.com/google/material-design-icons) estilo Rounded, de Google,
