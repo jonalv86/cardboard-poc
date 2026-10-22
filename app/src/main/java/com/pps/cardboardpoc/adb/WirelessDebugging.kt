@@ -37,4 +37,17 @@ object WirelessDebugging {
             false
         }
     }
+
+    /** Apaga la depuración inalámbrica si CeluVR tiene el permiso. */
+    fun disable(context: Context): Boolean {
+        if (!hasPermission(context)) return false
+        return try {
+            Settings.Global.putInt(context.contentResolver, SETTING, 0)
+            Log.d(TAG, "depuración inalámbrica apagada por la app")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "no se pudo apagar la depuración inalámbrica", e)
+            false
+        }
+    }
 }

@@ -135,5 +135,15 @@ class AdbConnectionManager private constructor(context: Context) : AbsAdbConnect
             instance ?: synchronized(this) {
                 instance ?: AdbConnectionManager(context.applicationContext).also { instance = it }
             }
+
+        /** Borra la identidad adb (clave y certificado) y descarta la instancia, para re-generarla. */
+        fun reset(context: Context) {
+            synchronized(this) {
+                runCatching { instance?.close() }
+                instance = null
+            }
+            File(context.filesDir, KEY_FILE).delete()
+            File(context.filesDir, CERT_FILE).delete()
+        }
     }
 }

@@ -99,18 +99,20 @@ autoconexión".
    tocar 7 veces "Número de compilación".
 2. Conectar el celular a una red Wi-Fi.
 3. Ir a Ajustes > Opciones de desarrollador > **Depuración inalámbrica** y activarla.
-4. Abrir CeluVR y tocar **Iniciar**. Cuando aparezca la ventanita de emparejamiento, ir a Depuración
-   inalámbrica > **"Vincular dispositivo con código de vinculación"** y, con ese diálogo abierto,
-   escribir el código de 6 dígitos en la ventanita. El emparejamiento queda guardado.
+4. Abrir CeluVR, ir a **Acerca de > Modo fluido (opcional)** y tocar **"Configurar modo fluido"**. Cuando
+   aparezca la ventanita, ir a Depuración inalámbrica > **"Vincular dispositivo con código de vinculación"**
+   y, con ese diálogo abierto, escribir el código de 6 dígitos en la ventanita. El emparejamiento queda
+   guardado. (Tocar **Iniciar** sin configurar nunca pide emparejar: usa la captura normal.)
 
-**Después de cada reinicio del celular:** solo volver a activar la **Depuración inalámbrica** (el
-emparejamiento sigue valiendo; no hay que repetir el código). El Wi-Fi solo hace falta para que el adbd
-arranque: no necesita internet (sirve el hotspot de otro celular) y, una vez conectado, se puede cortar.
+**Después de cada reinicio del celular:** no hay que hacer nada a mano. CeluVR vuelve a activar la
+**Depuración inalámbrica** sola al tocar Iniciar (el emparejamiento sigue valiendo; no hay que repetir el
+código). El Wi-Fi solo hace falta para que el adbd arranque: no necesita internet (sirve el hotspot de otro
+celular) y, una vez conectado, se puede cortar.
 
 Con el modo fluido activo, el chip de la pantalla principal dice **"Modo fluido"** y, al tocar Iniciar,
 el panel abre las apps directo en el visor a fps completos, sin pasar por el selector. El video con DRM
-(Netflix y similares) sale negro igual. Los pasos están resumidos también en la app, en **Acerca de >
-Modo fluido**.
+(Netflix y similares) sale negro igual. Los pasos y la configuración (el botón **"Configurar modo fluido"**
+y, para revertirlo, **"Olvidar emparejamiento"**) están en la app, en **Acerca de > Modo fluido**.
 
 ### Recomendaciones para la prueba física
 

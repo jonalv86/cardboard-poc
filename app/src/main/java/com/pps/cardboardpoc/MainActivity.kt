@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -157,6 +158,9 @@ class MainActivity : ComponentActivity() {
                         serviceEnabled = accessibilityEnabled.value,
                         fluidActive = fluidActive,
                         onStartClick = { requestCapture() },
+                        fluidConfigured = fluidConfigured.value,
+                        onConfigureFluid = { startFluidSetup() },
+                        onForgetFluid = { forgetFluid() },
                         isDarkTheme = isDarkTheme,
                         onToggleDarkMode = { isDarkTheme = !isDarkTheme }
                     )
@@ -270,47 +274,37 @@ class MainActivity : ComponentActivity() {
 
         when {
             Shizuku.pingBinder() -> startVirtualViewer(null)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> ensureServerThenStart(null)
+            // Solo con el modo fluido ya configurado se intenta por adb; si no, captura normal. Así
+            // INICIAR nunca mete la ventanita de emparejar de prepo: eso es explícito, desde Acerca de.
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && AdbServerLauncher.isConfigured(this) ->
+                ensureServerThenStart(null)
             else -> launchProjection()
         }
     }
 
     /**
-     * Arranca el visor sobre el servidor propio conectándose al adbd local por depuración inalámbrica.
-     * Si el servidor ya está vivo abre directo; si el adbd exige emparejar, muestra el diálogo; si la
-     * depuración inalámbrica está apagada o algo falla, cae a la captura de pantalla de siempre.
+     * Arranca el visor sobre el servidor propio (modo fluido ya configurado): conecta al adbd local y,
+     * si algo falla, cae a la captura de pantalla de siempre. No muestra el emparejamiento.
      */
     private fun ensureServerThenStart(openPackage: String?) {
-        AdbServerLauncher.ensureServer(
-            this,
-            onReady = { ready ->
-                runOnUiThread {
-                    when {
-                        ready -> startServerViewer(openPackage)
-                        AdbServerLauncher.status.value == AdbServerLauncher.Status.WIRELESS_OFF ->
-                            launchProjection()
-                        else -> launchProjection()
-                    }
-                }
-            },
-            onNeedsPairing = {
-                runOnUiThread {
-                    pendingOpenPackage = openPackage
-                    requestPairing()
-                }
+        AdbServerLauncher.ensureServer(this) { ready ->
+            runOnUiThread {
+                if (ready) startServerViewer(openPackage) else launchProjection()
             }
-        )
+        }
     }
 
     /**
-     * Muestra la ventanita flotante para emparejar. Es un overlay del servicio de accesibilidad, así que
-     * no necesita el permiso de dibujar sobre otras apps y no lo oculta el diálogo de seguridad del
-     * sistema. Permite tipear el código sin tapar ese diálogo, que así sigue anunciando su servicio.
+     * Setup explícito del modo fluido (botón "Configurar" en Acerca de): muestra la ventanita para
+     * tipear el código de emparejamiento y, al emparejar, conecta y deja el modo fluido configurado.
+     * La ventanita es un overlay del servicio de accesibilidad, que el diálogo de seguridad no oculta.
      */
-    private fun requestPairing() {
+    private fun startFluidSetup() {
         val host = JoystickManager.accessibilityService
         if (host == null) {
-            Log.w(TAG, "emparejar: falta el servicio de accesibilidad")
+            // La ventanita de emparejar es un overlay del servicio de accesibilidad: sin el servicio no
+            // hay dónde dibujarla, así que primero se manda a activarlo.
+            openAccessibilitySettings()
             return
         }
         pairingOverlay?.hide()
@@ -319,12 +313,20 @@ class MainActivity : ComponentActivity() {
                 onPaired = {
                     runOnUiThread {
                         pairingOverlay = null
-                        ensureServerThenStart(pendingOpenPackage)
-                        pendingOpenPackage = null
+                        AdbServerLauncher.configure(this) {
+                            runOnUiThread { fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this) }
+                        }
                     }
                 },
                 onCancel = { runOnUiThread { pairingOverlay = null } }
             )
+        }
+    }
+
+    /** Olvida el modo fluido (botón en Acerca de): corta la conexión, borra la config y la clave adb. */
+    private fun forgetFluid() {
+        AdbServerLauncher.forget(this) {
+            runOnUiThread { fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this) }
         }
     }
 
@@ -381,6 +383,9 @@ fun CaptureScreen(
     serviceEnabled: Boolean,
     fluidActive: Boolean,
     onStartClick: () -> Unit,
+    fluidConfigured: Boolean = false,
+    onConfigureFluid: () -> Unit = {},
+    onForgetFluid: () -> Unit = {},
     isDarkTheme: Boolean = false,
     onToggleDarkMode: () -> Unit = {}
 ) {
@@ -540,7 +545,12 @@ fun CaptureScreen(
     }
 
     if (showInfoDialog) {
-        AboutScreen(onBack = { showInfoDialog = false })
+        AboutScreen(
+            onBack = { showInfoDialog = false },
+            configured = fluidConfigured,
+            onConfigure = onConfigureFluid,
+            onForget = onForgetFluid
+        )
     }
 }
 
@@ -586,7 +596,12 @@ fun StatusChip(
 }
 
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(
+    onBack: () -> Unit,
+    configured: Boolean = false,
+    onConfigure: () -> Unit = {},
+    onForget: () -> Unit = {}
+) {
     BackHandler(onBack = onBack)
     val violet = MaterialTheme.colorScheme.primary
     Surface(
@@ -691,7 +706,12 @@ fun AboutScreen(onBack: () -> Unit) {
                     }
                 }
 
-                FluidModeSection(accent = violet)
+                FluidModeSection(
+                    accent = violet,
+                    configured = configured,
+                    onConfigure = onConfigure,
+                    onForget = onForget
+                )
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -725,10 +745,16 @@ private fun AboutInfoRow(label: String, accent: Color, value: String) {
 
 /**
  * Sección desplegable que explica y guía el modo fluido (opcional, por depuración inalámbrica). Arranca
- * abierta; al tocar el encabezado se pliega.
+ * plegada. Según [configured], muestra los pasos para configurarlo con un botón "Configurar modo fluido",
+ * o la confirmación de que ya está configurado con la opción de olvidar el emparejamiento.
  */
 @Composable
-private fun FluidModeSection(accent: Color) {
+private fun FluidModeSection(
+    accent: Color,
+    configured: Boolean,
+    onConfigure: () -> Unit,
+    onForget: () -> Unit
+) {
     var expanded by remember { mutableStateOf(false) }
     Divider()
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -766,29 +792,49 @@ private fun FluidModeSection(accent: Color) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                FluidStep(1, "Activá Opciones de desarrollador: en Ajustes › Acerca del teléfono, tocá 7 veces el número de compilación.", accent)
-                FluidStep(2, "Activá la Depuración inalámbrica en Opciones de desarrollador.", accent)
-                FluidStep(3, "Tocá Iniciar y completá el emparejamiento.", accent)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(accent.copy(alpha = 0.10f))
-                        .padding(horizontal = 10.dp, vertical = 9.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = accent
-                    )
+                if (configured) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(accent.copy(alpha = 0.10f))
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = accent
+                        )
+                        Text(
+                            text = "Modo fluido configurado. Tocá Iniciar y el panel de apps abre directo en el visor.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                     Text(
-                        text = "Tras reiniciar el celular, solo volvé a activar la Depuración inalámbrica.",
+                        text = "Tras reiniciar el celular, CeluVR vuelve a activar la Depuración inalámbrica sola; no hay que repetir el emparejamiento.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    TextButton(
+                        onClick = onForget,
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Olvidar emparejamiento")
+                    }
+                } else {
+                    FluidStep(1, "Activá Opciones de desarrollador: en Ajustes › Acerca del teléfono, tocá 7 veces el número de compilación.", accent)
+                    FluidStep(2, "Activá la Depuración inalámbrica en Opciones de desarrollador.", accent)
+                    FluidStep(3, "Tocá \"Configurar modo fluido\" y escribí el código de vinculación del sistema.", accent)
+                    Button(
+                        onClick = onConfigure,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                    ) {
+                        Text("Configurar modo fluido")
+                    }
                 }
                 Text(
                     text = "Alternativa: con la app Shizuku iniciada, el modo fluido funciona sin este emparejamiento.",

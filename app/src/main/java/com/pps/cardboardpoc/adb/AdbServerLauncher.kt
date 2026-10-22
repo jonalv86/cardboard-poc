@@ -116,10 +116,22 @@ object AdbServerLauncher {
      * al menos una vez). Es un chequeo local: no abre ninguna conexión. No cubre Shizuku, que se consulta
      * aparte.
      */
+    /**
+     * Si el modo fluido está configurado: ya se emparejó y conectó al menos una vez (flag persistente),
+     * o hay una conexión/servidor vivos ahora. El flag se apaga si el adbd rechaza la clave (p. ej. al
+     * desvincular) o con [forget]. No cubre Shizuku, que se consulta aparte.
+     */
     fun isFluidAvailable(context: Context): Boolean =
-        connected ||
-            VDisplayConnection.isAvailable() ||
-            WirelessDebugging.hasPermission(context)
+        connected || VDisplayConnection.isAvailable() || isConfigured(context)
+
+    /** Flag persistente: el modo fluido quedó configurado (emparejado + conectado). */
+    fun isConfigured(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CONFIGURED, false)
+
+    private fun setConfigured(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_CONFIGURED, value).apply()
+    }
 
     private enum class ConnectResult { CONNECTED, NEEDS_PAIRING, FAILED }
 
@@ -144,11 +156,48 @@ object AdbServerLauncher {
     }
 
     /**
-     * Asegura que el servidor esté corriendo: conecta al adbd local si hace falta y lanza el proceso.
-     * [onReady] recibe true si el binder del servidor quedó disponible. [onNeedsPairing] se llama cuando
-     * el adbd exige emparejar primero.
+     * Conecta al adbd local (reusa la conexión viva si la hay). Con el modo fluido ya configurado,
+     * enciende la depuración inalámbrica sola y reintenta. Marca/limpia el flag persistente según el
+     * resultado: CONNECTED lo prende; NEEDS_PAIRING (el adbd rechazó la clave, p. ej. desvinculado) lo
+     * apaga. Corre en el executor.
      */
-    fun ensureServer(context: Context, onReady: (Boolean) -> Unit, onNeedsPairing: () -> Unit) {
+    private fun doConnect(context: Context, manager: AbsAdbConnectionManager): ConnectResult {
+        // Si la depuración inalámbrica se apagó, la conexión anterior está muerta aunque el flag siga en
+        // true: descartarla para reconectar en vez de usar un stream caído.
+        if (connected && !WirelessDebugging.isEnabled(context)) {
+            runCatching { shellStream?.close() }
+            runCatching { manager.close() }
+            shellStream = null
+            connected = false
+        }
+        if (connected) return ConnectResult.CONNECTED
+        _status.value = Status.CONNECTING
+        val canEnable = WirelessDebugging.hasPermission(context)
+        if (canEnable && !WirelessDebugging.isEnabled(context)) {
+            WirelessDebugging.enable(context)
+            Thread.sleep(WIRELESS_START_MS)
+        }
+        val result = connect(manager, context, if (canEnable) CONNECT_ATTEMPTS else 1)
+        when (result) {
+            ConnectResult.CONNECTED -> {
+                connected = true
+                // Con la conexión viva, CeluVR se concede WRITE_SECURE_SETTINGS por adb para encender la
+                // depuración inalámbrica sola de acá en más. Es de una sola vez.
+                if (!canEnable) grantWriteSecureSettings(context, manager)
+                setConfigured(context, true)
+            }
+            ConnectResult.NEEDS_PAIRING -> setConfigured(context, false)
+            ConnectResult.FAILED -> Unit
+        }
+        return result
+    }
+
+    /**
+     * Asegura que el servidor esté corriendo: conecta al adbd local si hace falta y lanza el proceso.
+     * [onReady] recibe true si el binder del servidor quedó disponible; false si no se pudo (el llamador
+     * cae a la captura normal). No muestra el emparejamiento: eso es explícito, vía [configure].
+     */
+    fun ensureServer(context: Context, onReady: (Boolean) -> Unit) {
         if (VDisplayConnection.isAvailable()) {
             onReady(true)
             return
@@ -157,44 +206,12 @@ object AdbServerLauncher {
         executor.submit {
             try {
                 val manager = AdbConnectionManager.getInstance(context)
-                // Si la depuración inalámbrica se apagó, la conexión anterior está muerta aunque el flag
-                // siga en true: descartarla para reconectar, en vez de lanzar sobre un stream caído (eso
-                // hacía fallar el primer INICIAR y caer al selector de captura).
-                if (connected && !WirelessDebugging.isEnabled(context)) {
-                    runCatching { shellStream?.close() }
-                    runCatching { manager.close() }
-                    shellStream = null
-                    connected = false
-                }
-                if (!connected) {
-                    _status.value = Status.CONNECTING
-                    // Si CeluVR ya tiene el permiso (concedido en una conexión anterior), enciende la
-                    // depuración inalámbrica ella misma ANTES de conectar: así, con el modo fluido ya
-                    // configurado, no cae al selector de captura por tenerla apagada tras un reinicio.
-                    val canEnable = WirelessDebugging.hasPermission(context)
-                    if (canEnable && !WirelessDebugging.isEnabled(context)) {
-                        WirelessDebugging.enable(context)
-                        Thread.sleep(WIRELESS_START_MS)
-                    }
-                    // Recién encendida, el adbd tarda en anunciarse: con el modo fluido configurado se
-                    // reintenta; sin configurar (no hay cómo encenderla), un solo intento y se cae a la captura.
-                    when (connect(manager, context, if (canEnable) CONNECT_ATTEMPTS else 1)) {
-                        ConnectResult.NEEDS_PAIRING -> {
-                            _status.value = Status.NEEDS_PAIRING
-                            onNeedsPairing()
-                            return@submit
-                        }
-                        ConnectResult.FAILED -> {
-                            Log.w(TAG, "adb: no se encontró el adbd (¿depuración inalámbrica apagada?)")
-                            _status.value = Status.WIRELESS_OFF
-                            onReady(false)
-                            return@submit
-                        }
-                        ConnectResult.CONNECTED -> connected = true
-                    }
-                    // Con la conexión viva, CeluVR se concede WRITE_SECURE_SETTINGS por adb para poder
-                    // encender la depuración inalámbrica sola de acá en más. Es de una sola vez.
-                    if (!canEnable) grantWriteSecureSettings(context, manager)
+                val result = doConnect(context, manager)
+                if (result != ConnectResult.CONNECTED) {
+                    _status.value =
+                        if (result == ConnectResult.NEEDS_PAIRING) Status.NEEDS_PAIRING else Status.WIRELESS_OFF
+                    onReady(false)
+                    return@submit
                 }
                 _status.value = Status.LAUNCHING
                 launchServerProcess(context, manager)
@@ -207,6 +224,42 @@ object AdbServerLauncher {
                 _status.value = Status.ERROR
                 onReady(false)
             }
+        }
+    }
+
+    /**
+     * Setup explícito del modo fluido: conecta al adbd local (el emparejamiento se hizo antes con
+     * [pair]) y deja el flag de configurado. [onDone] recibe si quedó configurado.
+     */
+    fun configure(context: Context, onDone: (Boolean) -> Unit) {
+        appContext = context.applicationContext
+        executor.submit {
+            val ok = try {
+                doConnect(context, AdbConnectionManager.getInstance(context)) == ConnectResult.CONNECTED
+            } catch (t: Throwable) {
+                Log.w(TAG, "adb: configuración falló", t)
+                false
+            }
+            onDone(ok)
+        }
+    }
+
+    /**
+     * Olvida el modo fluido: corta la conexión, borra el flag y la identidad adb, y apaga la depuración
+     * inalámbrica. Deja el celular como antes de configurar (hay que emparejar de nuevo para volver).
+     */
+    fun forget(context: Context, onDone: () -> Unit) {
+        appContext = context.applicationContext
+        executor.submit {
+            runCatching { shellStream?.close() }
+            shellStream = null
+            runCatching { AdbConnectionManager.getInstance(context).close() }
+            connected = false
+            setConfigured(context, false)
+            runCatching { WirelessDebugging.disable(context) }
+            AdbConnectionManager.reset(context)
+            _status.value = Status.IDLE
+            onDone()
         }
     }
 
@@ -293,6 +346,9 @@ object AdbServerLauncher {
     /** Reintentos de conexión tras encender la depuración inalámbrica, y espera entre ellos. */
     private const val CONNECT_ATTEMPTS = 3
     private const val CONNECT_RETRY_MS = 1500L
+
+    private const val PREFS = "celuvr_fluid"
+    private const val KEY_CONFIGURED = "configured"
 
     /** Espera tras encender la depuración inalámbrica, para que el adbd arranque y se anuncie por mDNS. */
     private const val WIRELESS_START_MS = 2500L

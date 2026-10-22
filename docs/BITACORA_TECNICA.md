@@ -1195,6 +1195,33 @@ overlays de aplicación** (anti-tapjacking; se ve `setForceHideNonSystemOverlayW
 los de accesibilidad, que son de confianza. Como lo agrega el servicio de accesibilidad, además no hace
 falta el permiso `SYSTEM_ALERT_WINDOW`.
 
+### Configuración explícita y auto-encendido
+
+El emparejamiento quedó **explícito**, separado de "Iniciar". Antes, "Iniciar" mostraba la ventanita la
+primera vez (o cuando el adbd rechazaba la clave), y eso sorprendía: tras desvincular CeluVR del lado del
+sistema, "Iniciar" seguía pidiendo emparejar aunque se apagaran la depuración inalámbrica y las opciones de
+desarrollador —CeluVR volvía a encender la depuración sola y la clave vieja, ya rechazada, caía en "hay que
+emparejar". Ahora un **flag persistente `configured`** (en `SharedPreferences`) decide: "Iniciar" solo
+intenta por adb si el modo fluido está configurado; si no, usa la captura normal y **nunca** muestra la
+ventanita. La configuración se dispara a mano desde **Acerca de › Modo fluido**, con el botón **"Configurar
+modo fluido"** (abre la ventanita y empareja) y su inverso **"Olvidar emparejamiento"** (borra el flag y la
+identidad adb, y apaga la depuración inalámbrica). `PairingOverlay` solo se crea desde "Configurar"; ningún
+camino de "Iniciar" puede llegar a él.
+
+**Auto-encendido de la depuración inalámbrica.** En la primera conexión, CeluVR se concede
+`WRITE_SECURE_SETTINGS` por su propio shell adb (`pm grant`, permiso de nivel *development* que shell puede
+otorgar y que persiste entre reinicios). Con ese permiso, de ahí en más enciende la depuración inalámbrica
+sola (escribe `adb_wifi_enabled=1`) al tocar "Iniciar": después de reiniciar el celular no queda ningún
+paso manual. El Wi-Fi solo hace falta para que el adbd arranque (sirve un hotspot; no necesita internet).
+
+**Anda con las opciones de desarrollador apagadas.** El daemon de la depuración inalámbrica (el `TlsServer`
+del adbd) obedece al setting `adb_wifi_enabled`, no al master de opciones de desarrollador: con
+`development_settings_enabled=0`, escribir `adb_wifi_enabled=1` igual lo levanta (en el log: `adbwifi started
+on port 43783` y `Acquired multicast lock` para el anuncio mDNS). Así que el modo fluido sigue funcionando
+con las opciones de desarrollador apagadas —por Shizuku (proceso privilegiado que vive hasta reiniciar) y por
+el servidor propio (CeluVR reenciende la depuración y la clave emparejada persiste en el keystore del adbd).
+Salvedad: en equipos con Knox/MDM el adb puede estar más atado al modo desarrollador.
+
 ### Qué queda igual, qué queda pendiente
 
 - La pantalla es la misma confiable de antes; los gestos, el panel y Atrás siguen usando
@@ -1202,23 +1229,28 @@ falta el permiso `SYSTEM_ALERT_WINDOW`.
 - El video con DRM (Netflix y similares) sigue saliendo negro, y se usan interfaces ocultas de Android
   (probado solo en Android 16).
 - Shizuku quedó como camino alternativo: si está corriendo, se usa; si no, se usa el servidor propio.
-- **Pendiente:** el servidor lanzado por adb muere al cortar la conexión; la autoconexión lo resuelve
-  mientras CeluVR esté conectada. Después de reiniciar el celular hay que reactivar la depuración
-  inalámbrica a mano; se podría automatizar concediéndose `WRITE_SECURE_SETTINGS` una vez (sin probar).
+- El servidor lanzado por adb muere al cortar la conexión; la autoconexión lo resuelve mientras CeluVR
+  esté conectada. La reactivación tras reiniciar el celular quedó **automatizada** (ver "Configuración
+  explícita y auto-encendido"): CeluVR se concede `WRITE_SECURE_SETTINGS` una vez y enciende la depuración
+  inalámbrica sola.
 
 ### En la app
 
-"Iniciar" sin Shizuku toma solo este camino: conecta al adbd local y, si falta emparejar, muestra la
-ventanita. La pantalla principal tiene un chip **"Modo fluido" / "Modo normal"** según esté activo, y
-el **Acerca de** una sección desplegable "Modo fluido (opcional)" con los pasos de configuración. El
-paso a paso para el usuario está en el README ("Videos y juegos fluidos").
+"Iniciar" sin Shizuku toma este camino solo si el modo fluido está **configurado**: conecta al adbd local
+y lanza el servidor; si no, cae a la captura normal (nunca muestra la ventanita). La pantalla principal
+tiene un chip **"Modo fluido" / "Modo normal"** según esté activo, y el **Acerca de** una sección
+desplegable "Modo fluido (opcional)" que, según el estado, muestra los pasos con el botón "Configurar modo
+fluido" o la confirmación con "Olvidar emparejamiento". El paso a paso para el usuario está en el README
+("Videos y juegos fluidos").
 
 ### Setup (una vez por celular)
 
 1. Activar opciones de desarrollador y la **depuración inalámbrica**.
-2. Abrir "Vincular dispositivo con código de vinculación" y, con ese diálogo abierto, tipear el código
-   de 6 dígitos en la ventanita de CeluVR.
-3. Después de cada reinicio, solo volver a activar la depuración inalámbrica (el emparejamiento persiste).
+2. En CeluVR, ir a **Acerca de › Modo fluido** y tocar **"Configurar modo fluido"**; abrir "Vincular
+   dispositivo con código de vinculación" y, con ese diálogo abierto, tipear el código de 6 dígitos en la
+   ventanita.
+3. Después de cada reinicio **no** hay paso manual: CeluVR reenciende la depuración inalámbrica sola al
+   tocar "Iniciar" (el emparejamiento persiste).
 
 Validado de punta a punta en el SM-S938B: emparejó y YouTube abrió en el display confiable creado por el
 servidor propio, todo desde el celular.
@@ -1424,8 +1456,9 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [x] **Todas las apps fluidas desde el panel, con Shizuku activo** (pantalla virtual propia).
 - [x] **Servidor propio sin Shizuku:** CeluVR crea la pantalla confiable con su propio proceso
       `app_process`, sin la app Shizuku (ver "Servidor propio y autoconexión").
-- [x] **Autoconexión desde el celular, sin computadora:** CeluVR se empareja con el adbd local y lanza
-      el servidor sola, con la ventanita de emparejamiento sobre el diálogo del sistema.
+- [x] **Autoconexión desde el celular, sin computadora:** CeluVR se empareja con el adbd local (setup
+      explícito desde "Acerca de › Modo fluido") y lanza el servidor sola; reenciende la depuración
+      inalámbrica por su cuenta tras reiniciar.
 
 **Lo que sigue ahora:**
 
@@ -1442,9 +1475,8 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
       que el SDK asume (60 mm entre lentes, 42 mm a la pantalla). Si con eso no alcanza, recién
       ahí cargar un perfil real del visor.
 - [ ] La pantalla virtual (hoy servidor propio, Shizuku como alternativa) quedó como **modo opcional**
-      sobre la captura. Falta decidir si su configuración es aceptable para el uso real y, si se quiere
-      sacar el último paso manual, automatizar el encendido de la depuración inalámbrica al arrancar
-      (concediéndose `WRITE_SECURE_SETTINGS` una vez; sin probar).
+      sobre la captura. Falta decidir si su configuración es aceptable para el uso real. El encendido de la
+      depuración inalámbrica tras reiniciar ya quedó automatizado (`WRITE_SECURE_SETTINGS`, probado).
 
 **Del proyecto en general:**
 
