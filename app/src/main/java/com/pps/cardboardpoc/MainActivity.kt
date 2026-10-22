@@ -14,6 +14,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,10 +29,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -52,14 +58,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.pps.cardboardpoc.adb.AdbServerLauncher
+import com.pps.cardboardpoc.adb.PairingOverlay
 import com.pps.cardboardpoc.ui.theme.CeluVRTheme
 import rikka.shizuku.Shizuku
 
@@ -73,8 +83,14 @@ class MainActivity : ComponentActivity() {
     /** Si el servicio de Shizuku está corriendo; con él el visor usa la pantalla virtual. */
     private val shizukuRunning = mutableStateOf(false)
 
-    /** App que abre el panel al arrancar el visor, a la espera del permiso de Shizuku. */
+    /** Si el modo fluido puede trabajar (config lista), detectado al abrir sin conectar. */
+    private val fluidConfigured = mutableStateOf(false)
+
+    /** App que abre el panel al arrancar el visor, a la espera del permiso de Shizuku o del emparejamiento. */
     private var pendingOpenPackage: String? = null
+
+    /** Ventanita flotante para tipear el código de emparejamiento sobre el diálogo del sistema. */
+    private var pairingOverlay: PairingOverlay? = null
 
     private val shizukuReceived = Shizuku.OnBinderReceivedListener { shizukuRunning.value = true }
     private val shizukuDead = Shizuku.OnBinderDeadListener { shizukuRunning.value = false }
@@ -127,12 +143,19 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
                     val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
+                    val adbStatus by AdbServerLauncher.status.collectAsState()
+                    // El modo fluido está disponible si Shizuku corre, o si ya está configurado (CeluVR
+                    // puede encender la depuración inalámbrica sola), o si hay una conexión/servidor vivos.
+                    val fluidActive = shizukuRunning.value ||
+                        fluidConfigured.value ||
+                        adbStatus == AdbServerLauncher.Status.READY ||
+                        adbStatus == AdbServerLauncher.Status.LAUNCHING
                     CaptureScreen(
                         supported = isViewerSupported(),
                         fullScreenRejected = fullScreenRejected,
                         serviceConnected = serviceConnected,
                         serviceEnabled = accessibilityEnabled.value,
-                        shizukuRunning = shizukuRunning.value,
+                        fluidActive = fluidActive,
                         onStartClick = { requestCapture() },
                         isDarkTheme = isDarkTheme,
                         onToggleDarkMode = { isDarkTheme = !isDarkTheme }
@@ -147,6 +170,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
         shizukuRunning.value = Shizuku.pingBinder()
+        fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this)
     }
 
     override fun onDestroy() {
@@ -195,6 +219,25 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Arranca el visor sobre la pantalla virtual del servidor propio de CeluVR, que ya tiene que estar
+     * conectado. Lo llama [ensureServerThenStart] una vez que el servidor entregó su binder.
+     */
+    private fun startServerViewer(openPackage: String?) {
+        if (ScreenCaptureService.isCapturing) return
+        if (!JoystickManager.serviceConnected.value) {
+            Log.w(TAG, "servidor: falta el servicio de accesibilidad")
+            return
+        }
+        if (!ServerDisplay.isAvailable()) {
+            Log.w(TAG, "servidor: no está conectado; lanzalo con app_process")
+            return
+        }
+        ContextCompat.startForegroundService(
+            this, ScreenCaptureService.startServerIntent(this, openPackage)
+        )
+    }
+
+    /**
      * Arranca el visor sobre la pantalla virtual de Shizuku, que ya tiene que estar corriendo. Si falta
      * el permiso de Shizuku lo pide, con su propio diálogo: al aceptarlo arranca, y al negarlo se usa
      * la captura de pantalla.
@@ -225,10 +268,63 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (Shizuku.pingBinder()) {
-            startVirtualViewer(null)
-        } else {
-            launchProjection()
+        when {
+            Shizuku.pingBinder() -> startVirtualViewer(null)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> ensureServerThenStart(null)
+            else -> launchProjection()
+        }
+    }
+
+    /**
+     * Arranca el visor sobre el servidor propio conectándose al adbd local por depuración inalámbrica.
+     * Si el servidor ya está vivo abre directo; si el adbd exige emparejar, muestra el diálogo; si la
+     * depuración inalámbrica está apagada o algo falla, cae a la captura de pantalla de siempre.
+     */
+    private fun ensureServerThenStart(openPackage: String?) {
+        AdbServerLauncher.ensureServer(
+            this,
+            onReady = { ready ->
+                runOnUiThread {
+                    when {
+                        ready -> startServerViewer(openPackage)
+                        AdbServerLauncher.status.value == AdbServerLauncher.Status.WIRELESS_OFF ->
+                            launchProjection()
+                        else -> launchProjection()
+                    }
+                }
+            },
+            onNeedsPairing = {
+                runOnUiThread {
+                    pendingOpenPackage = openPackage
+                    requestPairing()
+                }
+            }
+        )
+    }
+
+    /**
+     * Muestra la ventanita flotante para emparejar. Es un overlay del servicio de accesibilidad, así que
+     * no necesita el permiso de dibujar sobre otras apps y no lo oculta el diálogo de seguridad del
+     * sistema. Permite tipear el código sin tapar ese diálogo, que así sigue anunciando su servicio.
+     */
+    private fun requestPairing() {
+        val host = JoystickManager.accessibilityService
+        if (host == null) {
+            Log.w(TAG, "emparejar: falta el servicio de accesibilidad")
+            return
+        }
+        pairingOverlay?.hide()
+        pairingOverlay = PairingOverlay(host).also { overlay ->
+            overlay.show(
+                onPaired = {
+                    runOnUiThread {
+                        pairingOverlay = null
+                        ensureServerThenStart(pendingOpenPackage)
+                        pendingOpenPackage = null
+                    }
+                },
+                onCancel = { runOnUiThread { pairingOverlay = null } }
+            )
         }
     }
 
@@ -283,7 +379,7 @@ fun CaptureScreen(
     fullScreenRejected: Boolean,
     serviceConnected: Boolean,
     serviceEnabled: Boolean,
-    shizukuRunning: Boolean,
+    fluidActive: Boolean,
     onStartClick: () -> Unit,
     isDarkTheme: Boolean = false,
     onToggleDarkMode: () -> Unit = {}
@@ -356,9 +452,10 @@ fun CaptureScreen(
                 modifier = Modifier.weight(1f)
             )
             StatusChip(
-                label = if (shizukuRunning) "Shizuku VR" else "Captura App",
-                active = shizukuRunning,
-                modifier = Modifier.weight(1f)
+                label = if (fluidActive) "Modo fluido" else "Modo normal",
+                active = fluidActive,
+                modifier = Modifier.weight(1f),
+                neutralWhenInactive = true
             )
         }
 
@@ -402,16 +499,16 @@ fun CaptureScreen(
                     text = when {
                         !supported ->
                             "El visor requiere Android 14 o superior (este equipo tiene Android ${Build.VERSION.RELEASE})."
-                        serviceConnected && shizukuRunning ->
-                            "Shizuku activo: Iniciar abre el panel de apps directo en el visor con máxima fluidez y rendimiento estéreo."
-                        serviceConnected && fullScreenRejected ->
-                            "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName."
-                        serviceConnected ->
-                            "Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName para abrir el panel inmersivo en el visor."
-                        serviceEnabled ->
+                        !serviceConnected && serviceEnabled ->
                             "El servicio de accesibilidad está activado pero detenido. Apágalo y vuelve a encenderlo en Ajustes."
-                        else ->
+                        !serviceConnected ->
                             "Falta activar el servicio de accesibilidad \"$serviceLabel\" para dibujar la vista estéreo."
+                        fluidActive ->
+                            "Modo fluido activo: tocá Iniciar y el panel de apps abre directo en el visor, a máxima fluidez."
+                        fullScreenRejected ->
+                            "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName."
+                        else ->
+                            "Tocá Iniciar: con el modo fluido configurado el panel abre directo; si no, elegí \"Una sola app\" y seleccioná $appName. El modo fluido (opcional) se activa desde Acerca de."
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -447,12 +544,31 @@ fun CaptureScreen(
     }
 }
 
+/**
+ * Chip de estado. Activo: color primario. Inactivo: rojo si es un estado que pide acción, o gris neutro
+ * si [neutralWhenInactive] (un estado válido, como "Modo normal", que no debe leerse como alerta).
+ */
 @Composable
-fun StatusChip(label: String, active: Boolean, modifier: Modifier = Modifier) {
+fun StatusChip(
+    label: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    neutralWhenInactive: Boolean = false
+) {
+    val container = when {
+        active -> MaterialTheme.colorScheme.primaryContainer
+        neutralWhenInactive -> MaterialTheme.colorScheme.surfaceVariant
+        else -> MaterialTheme.colorScheme.errorContainer
+    }
+    val content = when {
+        active -> MaterialTheme.colorScheme.onPrimaryContainer
+        neutralWhenInactive -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.onErrorContainer
+    }
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.small,
-        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+        color = container
     ) {
         Box(
             modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
@@ -463,7 +579,7 @@ fun StatusChip(label: String, active: Boolean, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
-                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer
+                color = content
             )
         }
     }
@@ -472,6 +588,7 @@ fun StatusChip(label: String, active: Boolean, modifier: Modifier = Modifier) {
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
+    val violet = MaterialTheme.colorScheme.primary
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -479,8 +596,7 @@ fun AboutScreen(onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(16.dp)
         ) {
             // Top Bar
             Row(
@@ -489,10 +605,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowBack,
-                        contentDescription = "Volver"
-                    )
+                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Volver")
                 }
                 Text(
                     text = "Acerca de",
@@ -501,138 +614,217 @@ fun AboutScreen(onBack: () -> Unit) {
                 )
             }
 
-            // Scrollable Content
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .verticalScroll(rememberScrollState())
             ) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // App Icon
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_celuvr_logo),
-                    contentDescription = "Icono de la aplicación",
-                    modifier = Modifier.size(88.dp),
-                    tint = Color.Unspecified
-                )
-
-                // App Name & Version
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // Encabezado centrado: ícono, nombre, versión y descripción.
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_celuvr_logo),
+                        contentDescription = "Icono de la aplicación",
+                        modifier = Modifier.size(96.dp),
+                        tint = Color.Unspecified
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Versión 1.0",
+                        text = "Versión 1.1",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = violet,
                         fontWeight = FontWeight.SemiBold
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Visualizá tu celular en un visor VR, en estéreo y con control por joystick o giroscopio.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
                 }
 
-                // Developers Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "DESARROLLADORES",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Jonatan Alvarez", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text("Lucas Llanos", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                        Text("Fabián Mamani", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    }
-                }
+                AboutInfoRow(
+                    label = "DESARROLLADORES",
+                    accent = violet,
+                    value = "Jonatan Alvarez · Lucas Llanos · Fabián Mamani"
+                )
+                AboutInfoRow(
+                    label = "MATERIA",
+                    accent = violet,
+                    value = "Práctica Profesional Supervisada"
+                )
 
-                // Subject Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
+                Divider()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "MATERIA",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Práctica Profesional Supervisada",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-
-                // Institution Card with Logo
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    )
-                ) {
+                    AboutLabel("INSTITUCIÓN", violet)
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_university),
-                            contentDescription = "Logo Institución UNGS",
-                            modifier = Modifier.size(48.dp),
+                            contentDescription = "Logo UNGS",
+                            modifier = Modifier.size(40.dp),
                             tint = Color.Unspecified
                         )
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "INSTITUCIÓN",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Universidad Nacional de General Sarmiento - UNGS",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
+                        Text(
+                            text = "Universidad Nacional de\nGeneral Sarmiento",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                 }
 
+                FluidModeSection(accent = violet)
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun AboutLabel(text: String, accent: Color) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = accent,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.5.sp
+    )
+}
+
+@Composable
+private fun AboutInfoRow(label: String, accent: Color, value: String) {
+    Divider()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        AboutLabel(label, accent)
+        Text(text = value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/**
+ * Sección desplegable que explica y guía el modo fluido (opcional, por depuración inalámbrica). Arranca
+ * abierta; al tocar el encabezado se pliega.
+ */
+@Composable
+private fun FluidModeSection(accent: Color) {
+    var expanded by remember { mutableStateOf(false) }
+    Divider()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_speed),
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = accent
+            )
+            AboutLabel("MODO FLUIDO (OPCIONAL)", accent)
+            Spacer(modifier = Modifier.weight(1f))
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (expanded) "Contraer" else "Expandir",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                Text(
+                    text = "Por defecto se ve cualquier app, pero los videos y juegos pueden ir entrecortados. El modo fluido los muestra a máxima velocidad.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                FluidStep(1, "Activá Opciones de desarrollador: en Ajustes › Acerca del teléfono, tocá 7 veces el número de compilación.", accent)
+                FluidStep(2, "Activá la Depuración inalámbrica en Opciones de desarrollador.", accent)
+                FluidStep(3, "Tocá Iniciar y completá el emparejamiento.", accent)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(accent.copy(alpha = 0.10f))
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = accent
+                    )
+                    Text(
+                        text = "Tras reiniciar el celular, solo volvé a activar la Depuración inalámbrica.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = "Alternativa: con la app Shizuku iniciada, el modo fluido funciona sin este emparejamiento.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FluidStep(number: Int, text: String, accent: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(accent),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = number.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -646,7 +838,7 @@ fun CaptureScreenPreview() {
                 fullScreenRejected = false,
                 serviceConnected = true,
                 serviceEnabled = true,
-                shizukuRunning = false,
+                fluidActive = false,
                 onStartClick = {}
             )
         }
@@ -663,7 +855,7 @@ fun CaptureScreenDarkPreview() {
                 fullScreenRejected = false,
                 serviceConnected = true,
                 serviceEnabled = true,
-                shizukuRunning = false,
+                fluidActive = false,
                 onStartClick = {},
                 isDarkTheme = true
             )

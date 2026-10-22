@@ -12,8 +12,8 @@ android {
         applicationId = "com.pps.cardboardpoc"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -36,6 +36,7 @@ android {
     }
     buildFeatures {
         compose = true
+        aidl = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
@@ -63,6 +64,14 @@ dependencies {
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
     implementation(libs.hiddenapibypass)
+
+    // Cliente adb embebido: CeluVR se conecta al adbd local (depuración inalámbrica) y lanza el servidor
+    // de la pantalla virtual sin depender de una computadora. sun-security-android arma el certificado adb.
+    implementation(libs.libadb.android)
+    implementation(libs.sun.security.android)
+    // El TLS del emparejamiento usa exportKeyingMaterial, que el Conscrypt de la plataforma no expone
+    // con la firma esperada en Android nuevo; con este Conscrypt propio, libadb lo detecta y lo usa.
+    implementation(libs.conscrypt.android)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)

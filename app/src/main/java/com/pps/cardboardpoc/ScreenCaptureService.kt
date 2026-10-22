@@ -66,9 +66,12 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
 
-    /** Si la sesión lee una pantalla virtual propia, vía Shizuku, en vez de la proyección. */
+    /** Si la sesión lee una pantalla virtual propia en vez de la proyección. */
     private var virtualMode = false
-    private var shizukuDisplay: ShizukuDisplay? = null
+
+    /** Con true la pantalla virtual la crea el servidor propio de CeluVR; con false, Shizuku. */
+    private var useOwnServer = false
+    private var virtualBackend: VirtualDisplayBackend? = null
 
     /** Pasa a vertical las apps que solo funcionan así. Solo existe con la pantalla virtual. */
     private var portraitAppDetector: PortraitAppDetector? = null
@@ -106,12 +109,15 @@ class ScreenCaptureService : Service() {
                 }
             }
 
-            ACTION_START_VIRTUAL -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-                startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
-            }
+            ACTION_START_VIRTUAL, ACTION_START_SERVER ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    useOwnServer = intent.action == ACTION_START_SERVER
+                    startForeground(
+                        NOTIFICATION_ID, buildNotification(),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    )
+                    startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
+                }
 
             ACTION_SET_PORTRAIT -> setPortrait(intent.getBooleanExtra(EXTRA_PORTRAIT, false))
 
@@ -201,8 +207,10 @@ class ScreenCaptureService : Service() {
     private fun startVirtual(openPackage: String?) {
         if (isCapturing) return
         val host = JoystickManager.accessibilityService
-        if (host == null || !ShizukuDisplay.isAvailable()) {
-            Log.w(TAG, "pantalla virtual: falta el servicio de accesibilidad o Shizuku con permiso")
+        val backendAvailable =
+            if (useOwnServer) ServerDisplay.isAvailable() else ShizukuDisplay.isAvailable()
+        if (host == null || !backendAvailable) {
+            Log.w(TAG, "pantalla virtual: falta el servicio de accesibilidad o el backend (servidor=$useOwnServer)")
             stopSelf()
             return
         }
@@ -218,7 +226,7 @@ class ScreenCaptureService : Service() {
         captureThread = HandlerThread("CaptureThread").apply { start() }
 
         rebuildCapture()
-        val display = shizukuDisplay
+        val display = virtualBackend
         if (display == null) {
             stopSelf()
             return
@@ -347,7 +355,7 @@ class ScreenCaptureService : Service() {
 
         if (projection == null) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                updateShizukuDisplay(reader, width, height, metrics.densityDpi)
+                updateVirtualBackend(reader, width, height, metrics.densityDpi)
             }
             // La pantalla virtual ya escribe sobre el reader nuevo: el viejo se puede cerrar.
             synchronized(captureLock) { previousReader?.close() }
@@ -375,15 +383,19 @@ class ScreenCaptureService : Service() {
      * queda congelado.
      */
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun updateShizukuDisplay(reader: ImageReader, width: Int, height: Int, densityDpi: Int) {
-        val display = shizukuDisplay
+    private fun updateVirtualBackend(reader: ImageReader, width: Int, height: Int, densityDpi: Int) {
+        val display = virtualBackend
         if (display != null) {
             display.setSurface(reader.surface)
             display.resize(width, height, densityDpi)
             return
         }
-        shizukuDisplay = try {
-            ShizukuDisplay.create(reader.surface, width, height, densityDpi)
+        virtualBackend = try {
+            if (useOwnServer) {
+                ServerDisplay.create(reader.surface, width, height, densityDpi)
+            } else {
+                ShizukuDisplay.create(reader.surface, width, height, densityDpi)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "pantalla virtual: no se pudo crear", e)
             null
@@ -489,8 +501,8 @@ class ScreenCaptureService : Service() {
         virtualDisplay = null
         display?.release()
 
-        val ownDisplay = shizukuDisplay
-        shizukuDisplay = null
+        val ownDisplay = virtualBackend
+        virtualBackend = null
         if (ownDisplay != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
                 ownDisplay.release()
@@ -503,6 +515,7 @@ class ScreenCaptureService : Service() {
         if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
         frontAppPortraitOnly = false
         virtualMode = false
+        useOwnServer = false
         portraitState.value = false
         JoystickManager.targetDisplayId = Display.DEFAULT_DISPLAY
 
@@ -595,6 +608,7 @@ class ScreenCaptureService : Service() {
         private const val ACTION_START = "com.pps.cardboardpoc.action.START_CAPTURE"
         private const val ACTION_STOP = "com.pps.cardboardpoc.action.STOP_CAPTURE"
         private const val ACTION_START_VIRTUAL = "com.pps.cardboardpoc.action.START_VIRTUAL"
+        private const val ACTION_START_SERVER = "com.pps.cardboardpoc.action.START_SERVER"
         private const val ACTION_SET_PORTRAIT = "com.pps.cardboardpoc.action.SET_PORTRAIT"
         private const val EXTRA_OPEN_PACKAGE = "open_package"
         private const val EXTRA_PORTRAIT = "portrait"
@@ -661,6 +675,16 @@ class ScreenCaptureService : Service() {
         fun startVirtualIntent(context: Context, openPackage: String?): Intent =
             Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_START_VIRTUAL
+                putExtra(EXTRA_OPEN_PACKAGE, openPackage)
+            }
+
+        /**
+         * Intent que arranca el visor sobre la pantalla virtual del servidor propio de CeluVR (sin
+         * Shizuku). Con [openPackage], el panel abre esa app apenas aparece.
+         */
+        fun startServerIntent(context: Context, openPackage: String?): Intent =
+            Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_START_SERVER
                 putExtra(EXTRA_OPEN_PACKAGE, openPackage)
             }
 

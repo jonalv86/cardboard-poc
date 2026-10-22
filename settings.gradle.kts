@@ -16,6 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // libadb-android y spake2-java se publican solo en JitPack.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

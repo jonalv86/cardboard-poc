@@ -25,22 +25,18 @@ import rikka.shizuku.SystemServiceHelper
 class ShizukuDisplay private constructor(
     private val displayManager: Any,
     private val callback: Any,
-    /** Id de la pantalla virtual, para abrir apps en ella y dirigir los gestos. */
-    val displayId: Int
-) {
+    override val displayId: Int
+) : VirtualDisplayBackend {
 
-    /** Cambia la superficie donde se dibuja la pantalla; null la deja sin destino. */
-    fun setSurface(surface: Surface?) {
+    override fun setSurface(surface: Surface?) {
         invoke("setVirtualDisplaySurface", callback, surface)
     }
 
-    /** Cambia el tamaño y la densidad de la pantalla. */
-    fun resize(width: Int, height: Int, densityDpi: Int) {
+    override fun resize(width: Int, height: Int, densityDpi: Int) {
         invoke("resizeVirtualDisplay", callback, width, height, densityDpi)
     }
 
-    /** Destruye la pantalla. Las apps que estaban en ella pasan a la pantalla física. */
-    fun release() {
+    override fun release() {
         invoke("releaseVirtualDisplay", callback)
     }
 
