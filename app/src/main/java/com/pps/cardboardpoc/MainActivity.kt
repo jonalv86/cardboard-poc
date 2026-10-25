@@ -2,18 +2,23 @@ package com.pps.cardboardpoc
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -38,8 +43,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
@@ -47,7 +54,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -68,7 +77,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.pps.cardboardpoc.adb.AdbServerLauncher
 import com.pps.cardboardpoc.adb.PairingOverlay
 import com.pps.cardboardpoc.ui.theme.CeluVRTheme
@@ -128,8 +136,13 @@ class MainActivity : ComponentActivity() {
         if (JoystickManager.serviceConnected.value) requestCapture()
     }
 
+    private fun hasGyroscope(): Boolean {
+        val sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        return sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_GYROSCOPE)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
         super.onCreate(savedInstanceState)
         mediaProjectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -140,30 +153,74 @@ class MainActivity : ComponentActivity() {
         setContent {
             val systemInDark = isSystemInDarkTheme()
             var isDarkTheme by remember { mutableStateOf(systemInDark) }
+            val prefs = remember { getSharedPreferences("celuvr_prefs", Context.MODE_PRIVATE) }
+            var gyroEnabled by remember { mutableStateOf(prefs.getBoolean("gyro_enabled", true)) }
+            var gyroSensitivity by remember { mutableStateOf(prefs.getFloat("gyro_sensitivity", 1.0f)) }
+            val deviceHasGyroscope = remember { hasGyroscope() }
+            var showSettingsScreen by remember { mutableStateOf(false) }
+            var showInfoScreen by remember { mutableStateOf(false) }
+
             CeluVRTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
                     val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
                     val adbStatus by AdbServerLauncher.status.collectAsState()
-                    // El modo fluido está disponible si Shizuku corre, o si ya está configurado (CeluVR
-                    // puede encender la depuración inalámbrica sola), o si hay una conexión/servidor vivos.
                     val fluidActive = shizukuRunning.value ||
                         fluidConfigured.value ||
                         adbStatus == AdbServerLauncher.Status.READY ||
                         adbStatus == AdbServerLauncher.Status.LAUNCHING
-                    CaptureScreen(
-                        supported = isViewerSupported(),
-                        fullScreenRejected = fullScreenRejected,
-                        serviceConnected = serviceConnected,
-                        serviceEnabled = accessibilityEnabled.value,
-                        fluidActive = fluidActive,
-                        onStartClick = { requestCapture() },
-                        fluidConfigured = fluidConfigured.value,
-                        onConfigureFluid = { startFluidSetup() },
-                        onForgetFluid = { forgetFluid() },
-                        isDarkTheme = isDarkTheme,
-                        onToggleDarkMode = { isDarkTheme = !isDarkTheme }
-                    )
+
+                    when {
+                        showSettingsScreen -> {
+                            SettingsScreen(
+                                hasGyroscope = deviceHasGyroscope,
+                                gyroEnabled = gyroEnabled,
+                                gyroSensitivity = gyroSensitivity,
+                                onGyroEnabledChange = { enabled ->
+                                    gyroEnabled = enabled
+                                    prefs.edit().putBoolean("gyro_enabled", enabled).apply()
+                                },
+                                onGyroSensitivityChange = { sens ->
+                                    gyroSensitivity = sens
+                                    prefs.edit().putFloat("gyro_sensitivity", sens).apply()
+                                },
+                                onResetToDefaults = {
+                                    gyroEnabled = true
+                                    gyroSensitivity = 1.0f
+                                    prefs.edit()
+                                        .putBoolean("gyro_enabled", true)
+                                        .putFloat("gyro_sensitivity", 1.0f)
+                                        .apply()
+                                },
+                                onBack = { showSettingsScreen = false }
+                            )
+                        }
+                        showInfoScreen -> {
+                            AboutScreen(
+                                onBack = { showInfoScreen = false },
+                                configured = fluidConfigured.value,
+                                onConfigure = { startFluidSetup() },
+                                onForget = { forgetFluid() }
+                            )
+                        }
+                        else -> {
+                            CaptureScreen(
+                                supported = isViewerSupported(),
+                                fullScreenRejected = fullScreenRejected,
+                                serviceConnected = serviceConnected,
+                                serviceEnabled = accessibilityEnabled.value,
+                                fluidActive = fluidActive,
+                                onStartClick = { requestCapture() },
+                                fluidConfigured = fluidConfigured.value,
+                                onConfigureFluid = { startFluidSetup() },
+                                onForgetFluid = { forgetFluid() },
+                                isDarkTheme = isDarkTheme,
+                                onToggleDarkMode = { isDarkTheme = !isDarkTheme },
+                                onOpenSettings = { showSettingsScreen = true },
+                                onOpenInfo = { showInfoScreen = true }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -387,9 +444,10 @@ fun CaptureScreen(
     onConfigureFluid: () -> Unit = {},
     onForgetFluid: () -> Unit = {},
     isDarkTheme: Boolean = false,
-    onToggleDarkMode: () -> Unit = {}
+    onToggleDarkMode: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    onOpenInfo: () -> Unit = {}
 ) {
-    var showInfoDialog by remember { mutableStateOf(false) }
     val appName = stringResource(R.string.app_name)
     val serviceLabel = stringResource(R.string.accessibility_service_label)
 
@@ -431,7 +489,14 @@ fun CaptureScreen(
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
-                IconButton(onClick = { showInfoDialog = true }) {
+                IconButton(onClick = onOpenSettings) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Ajustes",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                IconButton(onClick = onOpenInfo) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = "Información",
@@ -542,15 +607,6 @@ fun CaptureScreen(
                 Text("• Botón A: Volver / Atrás", style = MaterialTheme.typography.bodySmall)
             }
         }
-    }
-
-    if (showInfoDialog) {
-        AboutScreen(
-            onBack = { showInfoDialog = false },
-            configured = fluidConfigured,
-            onConfigure = onConfigureFluid,
-            onForget = onForgetFluid
-        )
     }
 }
 
@@ -916,6 +972,206 @@ fun AboutScreenPreview() {
         AboutScreen(onBack = {})
     }
 }
+
+@Composable
+fun SettingsScreen(
+    hasGyroscope: Boolean,
+    gyroEnabled: Boolean,
+    gyroSensitivity: Float,
+    onGyroEnabledChange: (Boolean) -> Unit,
+    onGyroSensitivityChange: (Float) -> Unit,
+    onResetToDefaults: () -> Unit,
+    onBack: () -> Unit
+) {
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Top Bar
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Volver"
+                    )
+                }
+                Text(
+                    text = "Ajustes",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Scrollable Content
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Gyroscope Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "SENSOR DE GIROSCOPIO",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        // Toggle Option
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Puntero por giroscopio",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Mover el cursor con el movimiento de la cabeza",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = gyroEnabled && hasGyroscope,
+                                onCheckedChange = onGyroEnabledChange,
+                                enabled = hasGyroscope
+                            )
+                        }
+
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        // Sensitivity Slider Option
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Sensibilidad",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = String.format(Locale.US, "%.1fx", gyroSensitivity),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Slider(
+                                value = gyroSensitivity,
+                                onValueChange = onGyroSensitivityChange,
+                                valueRange = 0.5f..2.0f,
+                                steps = 15,
+                                enabled = hasGyroscope && gyroEnabled
+                            )
+                        }
+
+                        // Legend if no gyroscope
+                        if (!hasGyroscope) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "⚠️ Tu dispositivo no cuenta con sensor de giroscopio. Estas opciones se encuentran deshabilitadas.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Reset Button
+                OutlinedButton(
+                    onClick = { showResetConfirmDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
+                ) {
+                    Text("Restablecer", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            title = { Text("Restablecer valores") },
+            text = { Text("¿Deseas restablecer los ajustes a sus valores predeterminados?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showResetConfirmDialog = false
+                        onResetToDefaults()
+                    }
+                ) {
+                    Text("Restablecer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun SettingsScreenPreview() {
+    CeluVRTheme {
+        SettingsScreen(
+            hasGyroscope = true,
+            gyroEnabled = true,
+            gyroSensitivity = 1.0f,
+            onGyroEnabledChange = {},
+            onGyroSensitivityChange = {},
+            onResetToDefaults = {},
+            onBack = {}
+        )
+    }
+}
+
 
 
 

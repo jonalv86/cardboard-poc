@@ -12,7 +12,7 @@ import kotlin.math.exp
  * desplazamiento del cursor. Toma como frente la orientación del inicio de la captura, o la del
  * último centrado. Se alimenta una vez por cuadro desde el hilo de render.
  */
-class HeadPointer {
+class HeadPointer(private val sensitivity: Float = 1.0f) {
 
     private val eulerAngles = FloatArray(3)
     private var framesSeen = 0
@@ -73,7 +73,7 @@ class HeadPointer {
         // vertical no llena el ojo a lo ancho, y el cursor tiene que acompañar a la cabeza igual que en
         // horizontal.
         val eyeWidthPx = JoystickManager.screenWidth / imageWidthFraction.coerceIn(0.05f, 1f)
-        val pixelsPerRadian = eyeWidthPx / Math.toRadians(FULL_WIDTH_DEGREES).toFloat()
+        val pixelsPerRadian = (eyeWidthPx / Math.toRadians(FULL_WIDTH_DEGREES).toFloat()) * sensitivity
         val offsetX = -smoothedYaw * pixelsPerRadian
         val offsetY = -smoothedPitch * pixelsPerRadian
         JoystickManager.setHeadOffset(offsetX, offsetY)
@@ -110,15 +110,18 @@ class HeadPointer {
 
         /** Devuelve un HeadPointer si el teléfono tiene giroscopio, o null si el cursor va solo con el joystick. */
         fun createIfAvailable(context: Context): HeadPointer? {
+            val prefs = context.getSharedPreferences("celuvr_prefs", Context.MODE_PRIVATE)
             val hasGyroscope =
                 context.packageManager.hasSystemFeature(PackageManager.FEATURE_SENSOR_GYROSCOPE)
-            val enabled = hasGyroscope && !SIMULATE_NO_GYROSCOPE
+            val gyroEnabled = prefs.getBoolean("gyro_enabled", true)
+            val sensitivity = prefs.getFloat("gyro_sensitivity", 1.0f)
+            val enabled = hasGyroscope && gyroEnabled && !SIMULATE_NO_GYROSCOPE
             Log.d(
                 TAG,
-                "giroscopio=$hasGyroscope simularSinGiroscopio=$SIMULATE_NO_GYROSCOPE -> " +
+                "giroscopio=$hasGyroscope gyroEnabled=$gyroEnabled sensitivity=$sensitivity -> " +
                     if (enabled) "cursor con cabeza y joystick" else "cursor solo con joystick"
             )
-            return if (enabled) HeadPointer() else null
+            return if (enabled) HeadPointer(sensitivity) else null
         }
 
         /** Lleva un ángulo a [-π, π], para que cruzar el ±180° del yaw no dé un salto de una vuelta. */
