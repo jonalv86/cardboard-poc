@@ -73,8 +73,43 @@ class ScreenCaptureService : Service() {
     private var useOwnServer = false
     private var virtualBackend: VirtualDisplayBackend? = null
 
-    /** Pasa a vertical las apps que solo funcionan así. Solo existe con la pantalla virtual. */
-    private var portraitAppDetector: PortraitAppDetector? = null
+    /**
+     * Sigue la app al frente: gira la pantalla según la orientación que exige y decide si se la
+     * muestra con clones. Solo existe con la pantalla virtual.
+     */
+    private var frontAppDetector: FrontAppDetector? = null
+
+    /**
+     * Si los clones de la pantalla virtual son los que la muestran. Mientras tanto los frames del
+     * ImageReader no se copian. Se escribe en el main thread y se lee en CaptureThread.
+     */
+    @Volatile
+    private var mirrorActive = false
+
+    /** Si el backend no ofrece clones o el sistema los rechazó: no se reintenta en esta sesión. */
+    private var mirrorUnavailable = false
+
+    private val hideMirror = Runnable { setMirror(false) }
+
+    /**
+     * Último frame que llegó con los clones a la vista, sin copiar: es el que se muestra al volver a
+     * la imagen estéreo, que si no quedaría con uno de antes de los clones. Se usa con [captureLock].
+     */
+    private var heldImage: Image? = null
+
+    /** Copia y muestra [heldImage], si sigue ahí. Corre en CaptureThread. */
+    private val showHeldImage = Runnable {
+        val bitmap = synchronized(captureLock) {
+            val image = heldImage ?: return@Runnable
+            heldImage = null
+            try {
+                imageToBitmap(image)
+            } finally {
+                image.close()
+            }
+        }
+        mainHandler.post { overlay?.updateFrame(bitmap) }
+    }
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var displayListener: DisplayManager.DisplayListener? = null
@@ -233,9 +268,10 @@ class ScreenCaptureService : Service() {
         }
         JoystickManager.targetDisplayId = display.displayId
         registerDisplayListener()
-        portraitAppDetector = PortraitAppDetector(host, mainHandler) { portraitOnly ->
-            frontAppPortraitOnly = portraitOnly
-            if (portraitOnly) setPortrait(true)
+        frontAppDetector = FrontAppDetector(host, mainHandler) { front ->
+            frontAppOrientationLocked = front.lockedPortrait != null
+            front.lockedPortrait?.let { setPortrait(it) }
+            updateMirror(front.packageName?.let(StreamingApps::usesDrm) == true)
         }.also { it.start() }
         PanelActivity.show(host, openPackage)
     }
@@ -272,6 +308,51 @@ class ScreenCaptureService : Service() {
         Log.d(TAG, "pantalla virtual: vertical=$enabled")
         portraitState.value = enabled
         rebuildCapture()
+    }
+
+    /**
+     * Prende los clones en el acto cuando la app al frente los necesita, y los apaga recién cuando
+     * dejó de necesitarlos por [MIRROR_OFF_DELAY_MS]: entre dos pantallas de una misma app puede no
+     * haber ninguna al frente por un instante, y apagarlos ahí hace parpadear la imagen.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun updateMirror(needed: Boolean) {
+        if (needed) {
+            mainHandler.removeCallbacks(hideMirror)
+            setMirror(true)
+        } else if (mirrorActive && !mainHandler.hasCallbacks(hideMirror)) {
+            mainHandler.postDelayed(hideMirror, MIRROR_OFF_DELAY_MS)
+        }
+    }
+
+    /**
+     * Muestra la pantalla virtual con clones de sus capas, uno por ojo, en vez de la imagen estéreo, o
+     * vuelve a la imagen estéreo. Solo con la pantalla virtual y un backend que ofrezca el clon.
+     */
+    private fun setMirror(enabled: Boolean) {
+        if (enabled == mirrorActive) return
+        val window = overlay ?: return
+        if (!enabled) {
+            mirrorActive = false
+            window.hideMirrors()
+            captureThread?.let { Handler(it.looper).post(showHeldImage) }
+            return
+        }
+        if (mirrorUnavailable) return
+        val display = virtualBackend ?: return
+        val clones = try {
+            listOfNotNull(display.mirror(), display.mirror())
+        } catch (e: Exception) {
+            Log.w(TAG, "clones: no se pudo clonar la pantalla", e)
+            emptyList()
+        }
+        if (clones.size < 2) {
+            Log.w(TAG, "clones: el backend no los ofrece o el sistema los rechazó")
+            clones.forEach { it.release() }
+            mirrorUnavailable = true
+            return
+        }
+        mirrorActive = window.showMirrors(clones[0], clones[1], captureWidth, captureHeight)
     }
 
     private fun isOwnTaskVisible(): Boolean {
@@ -320,6 +401,7 @@ class ScreenCaptureService : Service() {
         captureWidth = width
         captureHeight = height
         JoystickManager.setScreenSize(width, height)
+        overlay?.setMirrorSource(width, height)
 
         // Soltar la superficie antes de cerrar el reader: si el display sigue escribiendo sobre un
         // reader cerrado, la captura se corta.
@@ -332,6 +414,13 @@ class ScreenCaptureService : Service() {
             val bitmap = synchronized(captureLock) {
                 if (source !== imageReader) return@setOnImageAvailableListener
                 val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
+                // El frame nuevo reemplaza al guardado: se guarda este con los clones a la vista, y
+                // sin ellos se muestra este.
+                releaseHeldImage()
+                if (mirrorActive) {
+                    heldImage = image
+                    return@setOnImageAvailableListener
+                }
                 try {
                     imageToBitmap(image)
                 } finally {
@@ -357,8 +446,12 @@ class ScreenCaptureService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 updateVirtualBackend(reader, width, height, metrics.densityDpi)
             }
-            // La pantalla virtual ya escribe sobre el reader nuevo: el viejo se puede cerrar.
-            synchronized(captureLock) { previousReader?.close() }
+            // La pantalla virtual ya escribe sobre el reader nuevo: el viejo se puede cerrar, y un
+            // frame guardado suyo dejaría de servir al cerrarlo.
+            synchronized(captureLock) {
+                releaseHeldImage()
+                previousReader?.close()
+            }
             return
         }
 
@@ -510,16 +603,19 @@ class ScreenCaptureService : Service() {
                 Log.w(TAG, "pantalla virtual: no se pudo liberar", e)
             }
         }
-        val detector = portraitAppDetector
-        portraitAppDetector = null
+        val detector = frontAppDetector
+        frontAppDetector = null
         if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
-        frontAppPortraitOnly = false
+        frontAppOrientationLocked = false
+        mirrorActive = false
+        mirrorUnavailable = false
         virtualMode = false
         useOwnServer = false
         portraitState.value = false
         JoystickManager.targetDisplayId = Display.DEFAULT_DISPLAY
 
         synchronized(captureLock) {
+            releaseHeldImage()
             val reader = imageReader
             imageReader = null
             reader?.close()
@@ -536,6 +632,7 @@ class ScreenCaptureService : Service() {
         mainHandler.removeCallbacks(startWindowSource)
         mainHandler.removeCallbacks(allowScreenCapture)
         mainHandler.removeCallbacks(decideStartScreen)
+        mainHandler.removeCallbacks(hideMirror)
         val source = windowSource
         windowSource = null
         if (source != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -551,6 +648,12 @@ class ScreenCaptureService : Service() {
             JoystickManager.accessibilityService?.setCaptureActive(false)
             JoystickManager.refreshEdgeContact()
         }
+    }
+
+    /** Cierra el frame guardado, si hay. Se llama con [captureLock] tomado. */
+    private fun releaseHeldImage() {
+        heldImage?.close()
+        heldImage = null
     }
 
     private fun imageToBitmap(image: Image): Bitmap {
@@ -617,6 +720,9 @@ class ScreenCaptureService : Service() {
 
         /** Cuánto tiene que seguir oculta la tarea capturada para pasar a la captura por ventanas. */
         private const val SOURCE_SWITCH_DELAY_MS = 150L
+
+        /** Cuánto tiene que seguir al frente una app sin DRM para quitar los clones; dos revisiones. */
+        private const val MIRROR_OFF_DELAY_MS = 600L
 
         /** Cuánto tiene que seguir a la vista nuestra tarea al arrancar para abrir el panel. */
         private const val START_SCREEN_WAIT_MS = 1000L
@@ -694,11 +800,11 @@ class ScreenCaptureService : Service() {
         val portrait: StateFlow<Boolean> = portraitState
 
         /**
-         * Si la app al frente en la pantalla virtual solo funciona en vertical: se la muestra así y no
-         * se la puede pasar a horizontal. Lo lee el hilo de render para armar la barra.
+         * Si la app al frente en la pantalla virtual solo funciona en una orientación: se la muestra
+         * así y no se la puede girar. Lo lee el hilo de render para armar la barra.
          */
         @Volatile
-        var frontAppPortraitOnly = false
+        var frontAppOrientationLocked = false
             private set
 
         /** Intent que pasa la pantalla virtual a vertical, o la devuelve a horizontal. */

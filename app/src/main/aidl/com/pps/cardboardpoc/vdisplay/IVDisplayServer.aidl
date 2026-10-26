@@ -1,6 +1,7 @@
 package com.pps.cardboardpoc.vdisplay;
 
 import android.view.Surface;
+import android.view.SurfaceControl;
 
 /**
  * Lo que la app le pide al proceso servidor para manejar la pantalla virtual. El servidor corre con
@@ -23,4 +24,11 @@ interface IVDisplayServer {
 
     /** Libera la pantalla y termina el proceso servidor. */
     void shutdown();
+
+    /**
+     * Clona el árbol de capas de la pantalla y devuelve la raíz del clon, para colgarla en otra
+     * pantalla. Se clonan las capas, no los píxeles: el video protegido lo compone la pantalla de
+     * destino. Null si no hay pantalla o el sistema no lo permite.
+     */
+    @nullable SurfaceControl mirror();
 }

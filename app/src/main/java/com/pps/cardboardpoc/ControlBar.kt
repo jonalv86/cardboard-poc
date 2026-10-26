@@ -24,11 +24,11 @@ object ControlBar {
     /**
      * Botones de la barra, de izquierda a derecha. Vertical solo aparece con la pantalla virtual, la
      * única que se puede poner en vertical, y cuando la orientación se puede elegir: no sobre el
-     * panel, que siempre se ve en horizontal, ni sobre una app que solo funciona en vertical.
+     * panel, que siempre se ve en horizontal, ni sobre una app que solo funciona en una orientación.
      */
     val buttons: List<Button>
         get() = if (JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY &&
-            !PanelActivity.isInFront && !ScreenCaptureService.frontAppPortraitOnly
+            !PanelActivity.isInFront && !ScreenCaptureService.frontAppOrientationLocked
         ) {
             WITH_PORTRAIT
         } else {
