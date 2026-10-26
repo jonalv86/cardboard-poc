@@ -5,7 +5,11 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.PointF
+import android.graphics.Rect
+import android.graphics.RectF
 import android.hardware.display.DisplayManager
+import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -13,10 +17,15 @@ import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.Display
 import android.view.Gravity
+import android.view.SurfaceControl
 import android.view.View
 import android.view.WindowManager
 import com.google.cardboard.sdk.CardboardView
 import com.google.cardboard.sdk.Initialize
+import com.google.cardboard.sdk.LensDistortion
+import com.google.cardboard.sdk.QrCode
+import com.google.cardboard.sdk.nativetypes.EyeType
+import com.google.cardboard.sdk.nativetypes.UvPoint
 
 /**
  * Ventana flotante que dibuja el frame capturado en estéreo con el Cardboard SDK, para un visor
@@ -38,6 +47,17 @@ class StereoOverlay(private val context: AccessibilityService) {
     private var cardboardView: CardboardView? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var backHitArea: View? = null
+
+    /** Clones de la pantalla virtual colgados de esta ventana, uno por ojo. Vacío sin clones. */
+    private var mirrors: List<SurfaceControl> = emptyList()
+    private var mirrorSourceWidth = 0
+    private var mirrorSourceHeight = 0
+    private val mirrorLayoutListener =
+        View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutMirrors() }
+
+    /** Ventana con la UI encima de los clones, y lo que la dibuja. Null sin clones. */
+    private var mirrorUi: GLSurfaceView? = null
+    private var mirrorUiRenderer: MirrorUiRenderer? = null
 
     /** Agrega la ventana al WindowManager. No hace nada si ya está agregada. */
     fun show() {
@@ -80,8 +100,160 @@ class StereoOverlay(private val context: AccessibilityService) {
         renderer.pushFrame(bitmap)
     }
 
+    /**
+     * Muestra [left] y [right], clones de la pantalla virtual de [sourceWidth] x [sourceHeight], uno
+     * centrado en cada lente y por encima de la imagen estéreo, que deja de dibujarse. Los compone el
+     * sistema en la pantalla física, que es segura: ahí se ve el video protegido que la captura recibe
+     * en negro. A cambio no llevan la corrección de lente, que necesitaría leer esos píxeles. Devuelve
+     * false, y libera los clones, si la ventana no está.
+     */
+    fun showMirrors(
+        left: SurfaceControl,
+        right: SurfaceControl,
+        sourceWidth: Int,
+        sourceHeight: Int
+    ): Boolean {
+        val view = cardboardView
+        val root = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) view?.rootSurfaceControl else null
+        if (view == null || root == null) {
+            left.release()
+            right.release()
+            return false
+        }
+        hideMirrors()
+        mirrors = listOf(left, right)
+        mirrorSourceWidth = sourceWidth
+        mirrorSourceHeight = sourceHeight
+        mirrors.forEach { root.buildReparentTransaction(it)?.apply() }
+        showMirrorUi()
+        view.addOnLayoutChangeListener(mirrorLayoutListener)
+        layoutMirrors()
+        return true
+    }
+
+    /**
+     * Agrega la ventana con la UI encima de los clones. Entre ventanas del mismo tipo queda arriba la
+     * última agregada, así que tapa a la estéreo y a los clones que cuelgan de ella.
+     */
+    private fun showMirrorUi() {
+        val uiRenderer = MirrorUiRenderer(context)
+        val surface = GLSurfaceView(context).apply {
+            setEGLContextClientVersion(2)
+            // Con canal alfa: fuera de la UI la superficie queda transparente y deja ver los clones.
+            setEGLConfigChooser(8, 8, 8, 8, 0, 0)
+            holder.setFormat(PixelFormat.TRANSLUCENT)
+            setZOrderOnTop(true)
+            setRenderer(uiRenderer)
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply { ignoreInsets() }
+        windowManager.addView(surface, params)
+        mirrorUi = surface
+        mirrorUiRenderer = uiRenderer
+    }
+
+    /** Cambia el tamaño de la pantalla que muestran los clones, al pasarla a vertical u horizontal. */
+    fun setMirrorSource(width: Int, height: Int) {
+        mirrorSourceWidth = width
+        mirrorSourceHeight = height
+        layoutMirrors()
+    }
+
+    /** Descuelga y libera los clones, y la imagen estéreo vuelve a dibujarse. No hace nada si no hay. */
+    fun hideMirrors() {
+        if (mirrors.isEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        cardboardView?.removeOnLayoutChangeListener(mirrorLayoutListener)
+        mirrorUi?.let { removeWindow(it) }
+        mirrorUi = null
+        mirrorUiRenderer = null
+        renderer.mirroredImageWidth = 0f
+        val transaction = SurfaceControl.Transaction()
+        mirrors.forEach { transaction.reparent(it, null) }
+        transaction.apply()
+        mirrors.forEach { it.release() }
+        mirrors = emptyList()
+        Log.d(TAG, "clones: quitados")
+    }
+
+    /**
+     * Centra cada clon en su lente, con el tamaño más grande que entra en su mitad de pantalla sin
+     * salirse de ella, y le pasa los rectángulos a la UI que va encima.
+     */
+    private fun layoutMirrors() {
+        val view = cardboardView ?: return
+        if (mirrors.isEmpty() || view.width == 0 || mirrorSourceWidth == 0) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
+        val eyeWidth = view.width / 2f
+        val centers = lensCenters(view.width, view.height)
+        val halfWidth = centers.withIndex().minOf { (eye, center) ->
+            minOf(center.x - eye * eyeWidth, (eye + 1) * eyeWidth - center.x)
+        }
+        val halfHeight = centers.minOf { minOf(it.y, view.height - it.y) }
+        val scale = MIRROR_FILL *
+            minOf(2f * halfWidth / mirrorSourceWidth, 2f * halfHeight / mirrorSourceHeight)
+        val width = mirrorSourceWidth * scale
+        val height = mirrorSourceHeight * scale
+        val rects = centers.map {
+            RectF(it.x - width / 2f, it.y - height / 2f, it.x + width / 2f, it.y + height / 2f)
+        }
+
+        val transaction = SurfaceControl.Transaction()
+        mirrors.zip(rects).forEach { (mirror, rect) ->
+            transaction
+                .setLayer(mirror, Int.MAX_VALUE)
+                .setScale(mirror, scale, scale)
+                .setPosition(mirror, rect.left, rect.top)
+                .setCrop(mirror, Rect(0, 0, mirrorSourceWidth, mirrorSourceHeight))
+                .setVisibility(mirror, true)
+        }
+        transaction.apply()
+        mirrorUiRenderer?.eyeRects = rects
+        renderer.mirroredImageWidth = width / eyeWidth
+        Log.d(
+            TAG,
+            "clones: ${mirrorSourceWidth}x$mirrorSourceHeight escala=$scale " +
+                "lentes=${centers.joinToString { "(${it.x.toInt()},${it.y.toInt()})" }} " +
+                "ventana=${view.width}x${view.height}"
+        )
+    }
+
+    /**
+     * Centro de cada lente en una ventana de [width] x [height], izquierda primero: el punto de la
+     * pantalla que cada ojo ve de frente. Sale de los mismos parámetros del visor que usa el SDK para
+     * la imagen estéreo: los del QR escaneado o, si no hay, los de Cardboard V1.
+     */
+    private fun lensCenters(width: Int, height: Int): List<PointF> {
+        val params = QrCode.getSavedDeviceParams() ?: QrCode.getCardboardV1DeviceParams()
+        val lens = LensDistortion(params, width, height)
+        try {
+            val projection = FloatArray(16)
+            return listOf(EyeType.LEFT, EyeType.RIGHT).map { eye ->
+                lens.getEyeProjectionMatrix(eye, PROJECTION_NEAR, PROJECTION_FAR, projection)
+                // El frustum de cada ojo es asimétrico, y su corrimiento dice en qué punto de la
+                // textura del ojo cae la dirección de frente.
+                val ahead = UvPoint((1f - projection[8]) / 2f, (1f - projection[9]) / 2f)
+                val screen = lens.undistortedUvForDistortedUv(ahead, eye)
+                    ?: return@map PointF((eye + 0.5f) * width / 2f, height / 2f)
+                // En la pantalla del SDK v crece hacia arriba; en la ventana, y crece hacia abajo.
+                PointF(screen.u * width, (1f - screen.v) * height)
+            }
+        } finally {
+            lens.close()
+        }
+    }
+
     /** Quita la ventana. No hace nada si no está agregada. */
     fun hide() {
+        hideMirrors()
         val view = cardboardView ?: return
         cardboardView = null
 
@@ -228,5 +400,12 @@ class StereoOverlay(private val context: AccessibilityService) {
 
     private companion object {
         const val TAG = "CardboardCapture"
+
+        /** Fracción del lugar disponible alrededor de su lente que ocupa cada clon, del lado que lo limita. */
+        const val MIRROR_FILL = 0.9f
+
+        /** Planos de corte para pedir la proyección de cada ojo; solo importa su forma, no la distancia. */
+        const val PROJECTION_NEAR = 0.1f
+        const val PROJECTION_FAR = 100f
     }
 }

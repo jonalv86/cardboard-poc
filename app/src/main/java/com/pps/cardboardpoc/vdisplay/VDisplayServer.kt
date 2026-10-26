@@ -9,7 +9,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import android.view.Display
 import android.view.Surface
+import android.view.SurfaceControl
 
 /**
  * Proceso servidor que crea y maneja la pantalla virtual del visor. Se lanza con app_process desde el
@@ -149,6 +151,7 @@ object VDisplayServer {
     private class ServerStub(private val displayManager: Any) : IVDisplayServer.Stub() {
 
         private var callback: Any? = null
+        private var displayId = Display.INVALID_DISPLAY
 
         override fun create(surface: Surface, width: Int, height: Int, densityDpi: Int): Int {
             release()
@@ -168,8 +171,28 @@ object VDisplayServer {
             val create = displayManager.javaClass.methods.first { it.name == "createVirtualDisplay" }
             val displayId = create.invoke(displayManager, config, cb, null, SHELL_PACKAGE) as Int
             callback = cb
+            this.displayId = displayId
             Log.d(TAG, "servidor: pantalla virtual id=$displayId ${width}x$height dpi=$densityDpi")
             return displayId
+        }
+
+        /**
+         * Pide a WindowManager el clon de las capas de la pantalla; exige ACCESS_SURFACE_FLINGER, que
+         * shell tiene. Al devolverlo por binder el SurfaceControl de este proceso se libera solo: el
+         * clon vive mientras la app conserve el suyo.
+         */
+        override fun mirror(): SurfaceControl? {
+            if (callback == null) return null
+            val windowManager =
+                asInterface("android.view.IWindowManager", serviceBinder(Context.WINDOW_SERVICE))
+            // El constructor vacío es el que AIDL usa para los parámetros de salida.
+            val mirror = SurfaceControl::class.java.getDeclaredConstructor()
+                .apply { isAccessible = true }
+                .newInstance()
+            val mirrored = windowManager.javaClass.methods.first { it.name == "mirrorDisplay" }
+                .invoke(windowManager, displayId, mirror) as Boolean
+            Log.d(TAG, "servidor: espejo de la pantalla $displayId=${if (mirrored) "ok" else "rechazado"}")
+            return if (mirrored) mirror else null
         }
 
         override fun setSurface(surface: Surface?) {
@@ -183,6 +206,7 @@ object VDisplayServer {
         override fun release() {
             callback?.let { invoke("releaseVirtualDisplay", it) }
             callback = null
+            displayId = Display.INVALID_DISPLAY
         }
 
         override fun shutdown() {

@@ -1,6 +1,7 @@
 package com.pps.cardboardpoc
 
 import android.view.Surface
+import android.view.SurfaceControl
 
 /**
  * Pantalla virtual confiable del visor, sin importar quién presta los permisos de adb: Shizuku
@@ -20,4 +21,10 @@ interface VirtualDisplayBackend {
 
     /** Destruye la pantalla. Las apps que estaban en ella pasan a la pantalla física. */
     fun release()
+
+    /**
+     * Clon de las capas de la pantalla, para colgarlo en una ventana de la pantalla física. Null si el
+     * backend no lo ofrece o el sistema lo rechaza.
+     */
+    fun mirror(): SurfaceControl? = null
 }
