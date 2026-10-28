@@ -1,6 +1,7 @@
 package com.pps.cardboardpoc
 
 import android.view.Surface
+import android.view.SurfaceControl
 import com.pps.cardboardpoc.vdisplay.IVDisplayServer
 import com.pps.cardboardpoc.vdisplay.VDisplayConnection
 
@@ -25,6 +26,8 @@ class ServerDisplay private constructor(
     override fun release() {
         server.release()
     }
+
+    override fun mirror(): SurfaceControl? = server.mirror()
 
     companion object {
         /** Si el servidor propio está conectado y vivo. */

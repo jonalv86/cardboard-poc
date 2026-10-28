@@ -4,13 +4,15 @@ import android.content.ComponentName
 
 /**
  * Lo que el panel recuerda durante la sesión actual del visor: las apps abiertas, de la más reciente a
- * la más vieja, las que hay que abrir en una tarea propia y las que solo funcionan en vertical.
+ * la más vieja, las que hay que abrir en una tarea propia y las que solo funcionan en una orientación.
  */
 object SessionApps {
 
     private val used = mutableListOf<ComponentName>()
     private val ownTask = mutableSetOf<ComponentName>()
-    private val portraitOnly = mutableSetOf<String>()
+
+    /** Orientación fija de cada app, por paquete: true vertical, false horizontal. */
+    private val lockedOrientation = mutableMapOf<String, Boolean>()
 
     /** Registra que se abrió [component]; pasa a ser la más reciente. */
     @Synchronized
@@ -33,21 +35,24 @@ object SessionApps {
     @Synchronized
     fun needsOwnTask(component: ComponentName): Boolean = component in ownTask
 
-    /** Registra que la app de [packageName] solo funciona en vertical. */
+    /**
+     * Registra que la app de [packageName] solo funciona en vertical ([portrait] true) o en horizontal.
+     * Reemplaza lo anterior: una app puede tener pantallas fijas en cada orientación.
+     */
     @Synchronized
-    fun markPortraitOnly(packageName: String) {
-        portraitOnly.add(packageName)
+    fun lockOrientation(packageName: String, portrait: Boolean) {
+        lockedOrientation[packageName] = portrait
     }
 
-    /** Si la app de [packageName] solo funciona en vertical. */
+    /** Orientación fija de la app de [packageName]: true vertical, false horizontal, null cualquiera. */
     @Synchronized
-    fun isPortraitOnly(packageName: String): Boolean = packageName in portraitOnly
+    fun lockedPortrait(packageName: String): Boolean? = lockedOrientation[packageName]
 
     /** Olvida lo registrado; se llama al terminar la sesión del visor. */
     @Synchronized
     fun clear() {
         used.clear()
         ownTask.clear()
-        portraitOnly.clear()
+        lockedOrientation.clear()
     }
 }
