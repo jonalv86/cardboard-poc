@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <!-- La sesión sobre pantalla virtual no usa MediaProjection y necesita otro tipo de servicio. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Comandos de voz durante la sesión: con la app en segundo plano el micrófono solo entrega
+         audio a un servicio en primer plano de tipo microphone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- El cliente adb embebido abre un socket contra el adbd local (depuración inalámbrica). -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -61,7 +65,7 @@
             android:theme="@style/Theme.CeluVR" />
         <service
             android:name=".ScreenCaptureService"
-            android:foregroundServiceType="mediaProjection|specialUse"
+            android:foregroundServiceType="mediaProjection|specialUse|microphone"
             android:exported="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

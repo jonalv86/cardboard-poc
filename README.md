@@ -20,6 +20,7 @@ Desarrollado como Práctica Profesional Supervisada.
 | 2 | Renderizado estéreo con Cardboard SDK: distorsión de lente + head tracking | Funcional |
 | 3 | Interacción: accionar sobre la app capturada con el control | Funcional |
 | 4 | Navegación entre apps y modo fluido (fps completos, sin computadora) | Funcional |
+| — | Comandos de voz offline: tocar, agarrar, soltar, centrar y volver | Funcional |
 
 ---
 
@@ -49,6 +50,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 O directamente **Run** desde Android Studio.
+
+**La primera compilación necesita internet:** baja el modelo de reconocimiento de voz (unos 40 MB) y lo
+mete en el APK. Queda guardado en `app/build/`, así que solo se vuelve a bajar después de un `clean`.
 
 ### Dos cosas con las que vas a tropezar la primera vez
 
@@ -114,6 +118,23 @@ el panel abre las apps directo en el visor a fps completos, sin pasar por el sel
 (Netflix y similares) sale negro igual. Los pasos y la configuración (el botón **"Configurar modo fluido"**
 y, para revertirlo, **"Olvidar emparejamiento"**) están en la app, en **Acerca de > Modo fluido**.
 
+### Comandos de voz (opcional)
+
+Con el visor puesto, el cursor también se maneja con la voz, sin internet:
+
+| Decí | Hace |
+|---|---|
+| **"tocar"** | Un toque donde está el cursor |
+| **"agarrar"** | Apoya el dedo y lo deja apoyado: mover la cabeza arrastra |
+| **"soltar"** | Levanta el dedo de "agarrar" (si no, se suelta solo a los 15 s) |
+| **"centrar"** | Lleva el cursor al centro |
+| **"volver"** | Atrás |
+
+Se activa en **Ajustes › Comandos de voz › "Control por voz"**, que pide el permiso de micrófono. Cada
+comando tiene que ir **solo y con una pausa corta** antes del siguiente: una frase que contiene la palabra
+("tocá ahí") no hace nada, y así un video con sonido no dispara comandos. El cambio se aplica al iniciar la
+siguiente sesión.
+
 ### Recomendaciones para la prueba física
 
 - Brillo al máximo y brillo automático desactivado: dentro del visor se ve mucho más oscuro.
@@ -156,6 +177,7 @@ app/src/main/java/com/pps/cardboardpoc/
   ScreenCaptureService.kt       Captura la pantalla y entrega los frames
   StereoOverlay.kt              La ventana flotante y su ciclo de vida
   CardboardOverlayRenderer.kt   Dibuja el frame en cada ojo con OpenGL
+  VoiceCommands.kt              Escucha el micrófono y traduce los comandos de voz
 
 app/libs/sdk-debug.aar          Cardboard SDK compilado (ver nota abajo)
 docs/BITACORA_TECNICA.md        Bitácora técnica del proyecto
@@ -183,6 +205,12 @@ la alternativa sería que cada integrante instale el NDK y lo compile por su cue
 **Si alguna vez hay que actualizarlo, no alcanza con recompilar:** el build de Google tiene una
 falla que deja el `.aar` incompleto de una forma que no se nota hasta que la app se cierra en el
 celular. El parche necesario está explicado en la Fase 2 de la bitácora.
+
+## Sobre el modelo de voz
+
+Los comandos de voz usan [Vosk](https://alphacephei.com/vosk/) con el modelo
+**`vosk-model-small-es-0.42`** de Alpha Cephei, licencia Apache 2.0, tal como se publica: no tiene
+entrenamiento propio. No está versionado: la tarea `downloadVoskModel` de Gradle lo baja al compilar.
 
 ## Íconos
 

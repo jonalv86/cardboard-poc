@@ -185,7 +185,7 @@ class JoystickAccessibilityService : AccessibilityService() {
             x, y, settleMs = { 0L },
             target = { PointF(JoystickManager.cursorX, JoystickManager.cursorY) },
             keepDown = { buttonHeld },
-            onUp = {}
+            onUp = { cancelled -> if (cancelled && buttonHeld) JoystickManager.onPressCancelled() }
         )
     }
 

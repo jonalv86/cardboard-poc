@@ -401,7 +401,69 @@ object JoystickManager {
         accessibilityService?.releasePress()
         refreshEdgeContact()
     }
-    
+
+    /** Cuánto puede durar un agarre por voz si nunca se dice "soltar". */
+    private const val VOICE_GRAB_TIMEOUT_MS = 15_000L
+
+    /** Dedo apoyado con "agarrar" que todavía no se soltó; null si no hay. */
+    private var voiceGrab: Press? = null
+
+    /** Levanta el dedo de "agarrar" al vencer el plazo, salvo que ya se haya levantado por otra vía. */
+    private val releaseVoiceGrab = Runnable {
+        val grab = voiceGrab ?: return@Runnable
+        voiceGrab = null
+        if (press === grab) {
+            Log.d(TAG, "Voz: agarre liberado tras $VOICE_GRAB_TIMEOUT_MS ms sin \"soltar\"")
+            releasePress()
+        }
+    }
+
+    /** Toque corto donde está el cursor, igual que un gatillo apretado y soltado enseguida. */
+    fun voiceClick() {
+        if (press != null) {
+            Log.d(TAG, "Voz: tocar ignorado, ya hay un dedo apoyado")
+            return
+        }
+        pressDown()
+        releasePress()
+    }
+
+    /**
+     * Apoya el dedo donde está el cursor y lo deja apoyado hasta [voiceRelease] o hasta
+     * [VOICE_GRAB_TIMEOUT_MS]. Mientras tanto el dedo sigue al cursor, así que mover la cabeza arrastra.
+     */
+    fun voiceGrab() {
+        if (press != null) {
+            Log.d(TAG, "Voz: agarrar ignorado, ya hay un dedo apoyado")
+            return
+        }
+        pressDown()
+        // Sobre la barra de controles pressDown ejecuta el botón y no apoya nada.
+        val grab = press ?: return
+        voiceGrab = grab
+        handler.removeCallbacks(releaseVoiceGrab)
+        handler.postDelayed(releaseVoiceGrab, VOICE_GRAB_TIMEOUT_MS)
+    }
+
+    /** Levanta el dedo apoyado, sea de "agarrar" o del gatillo. */
+    fun voiceRelease() {
+        handler.removeCallbacks(releaseVoiceGrab)
+        voiceGrab = null
+        if (press == null) return
+        releasePress()
+    }
+
+    /**
+     * Olvida el dedo apoyado que el sistema canceló antes de que se levantara, para que la retícula
+     * vuelva a reposo y la voz no siga ignorando comandos hasta un "soltar".
+     */
+    fun onPressCancelled() {
+        Log.d(TAG, "El sistema canceló el dedo apoyado")
+        handler.removeCallbacks(releaseVoiceGrab)
+        voiceGrab = null
+        releasePress()
+    }
+
     /** Vuelve al panel de apps del visor. Fuera de la captura no hace nada. */
     fun showPanel() {
         if (!ScreenCaptureService.isCapturing) return
