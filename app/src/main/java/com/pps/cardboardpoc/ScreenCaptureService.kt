@@ -111,6 +111,9 @@ class ScreenCaptureService : Service() {
         mainHandler.post { overlay?.updateFrame(bitmap) }
     }
     private var imageReader: ImageReader? = null
+
+    /** Escucha de comandos de voz de la sesión; null si no hay sesión o falta el permiso. */
+    private var voiceCommands: VoiceCommands? = null
     private var captureThread: HandlerThread? = null
     private var displayListener: DisplayManager.DisplayListener? = null
     private var captureWidth = 0
@@ -149,7 +152,7 @@ class ScreenCaptureService : Service() {
                     useOwnServer = intent.action == ACTION_START_SERVER
                     startForeground(
                         NOTIFICATION_ID, buildNotification(),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or microphoneType()
                     )
                     startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
                 }
@@ -174,12 +177,20 @@ class ScreenCaptureService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or microphoneType()
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
     }
+
+    /**
+     * Tipo microphone si los comandos de voz están activados y con permiso, o 0. El tipo se fija al pasar
+     * a primer plano, con MainActivity a la vista: después, con la app en segundo plano, ya no se puede sumar.
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun microphoneType(): Int =
+        if (VoiceCommands.shouldListen(this)) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
 
     private fun startCapture(resultCode: Int, resultData: Intent) {
         if (mediaProjection != null) return
@@ -223,6 +234,7 @@ class ScreenCaptureService : Service() {
         mainHandler.postDelayed(allowScreenCapture, FULL_SCREEN_CHECK_WINDOW_MS)
         isCapturing = true
         host.setCaptureActive(true)
+        startVoiceCommands()
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -258,6 +270,7 @@ class ScreenCaptureService : Service() {
         captureStartMs = SystemClock.uptimeMillis()
         isCapturing = true
         host.setCaptureActive(true)
+        startVoiceCommands()
         captureThread = HandlerThread("CaptureThread").apply { start() }
 
         rebuildCapture()
@@ -640,6 +653,10 @@ class ScreenCaptureService : Service() {
         }
         SessionApps.clear()
 
+        val voice = voiceCommands
+        voiceCommands = null
+        voice?.stop()
+
         val window = overlay
         overlay = null
         window?.hide()
@@ -648,6 +665,11 @@ class ScreenCaptureService : Service() {
             JoystickManager.accessibilityService?.setCaptureActive(false)
             JoystickManager.refreshEdgeContact()
         }
+    }
+
+    private fun startVoiceCommands() {
+        if (voiceCommands != null || !VoiceCommands.shouldListen(this)) return
+        voiceCommands = VoiceCommands(this).apply { start() }
     }
 
     /** Cierra el frame guardado, si hay. Se llama con [captureLock] tomado. */

@@ -1,6 +1,55 @@
+import java.net.URI
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
+}
+
+/**
+ * Baja el modelo de voz de Vosk y lo deja como asset en [outputDir]/model-es, con el archivo uuid que
+ * StorageService.sync compara para decidir si vuelve a copiarlo al almacenamiento de la app.
+ */
+abstract class DownloadVoskModel : DefaultTask() {
+    @get:Input
+    abstract val modelName: Property<String>
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @get:Inject
+    abstract val archives: ArchiveOperations
+
+    @get:Inject
+    abstract val files: FileSystemOperations
+
+    @TaskAction
+    fun download() {
+        val zip = File(temporaryDir, "${modelName.get()}.zip")
+        val url = URI("https://alphacephei.com/vosk/models/${modelName.get()}.zip").toURL()
+        url.openStream().use { input -> zip.outputStream().use { input.copyTo(it) } }
+        val modelDir = outputDir.dir("model-es").get().asFile
+        files.delete { delete(outputDir) }
+        files.copy {
+            from(archives.zipTree(zip))
+            into(modelDir)
+            // El zip trae todo dentro de una carpeta con el nombre del modelo.
+            eachFile { relativePath = RelativePath(true, *relativePath.segments.drop(1).toTypedArray()) }
+            includeEmptyDirs = false
+        }
+        File(modelDir, "uuid").writeText(modelName.get())
+        zip.delete()
+    }
+}
+
+val downloadVoskModel = tasks.register<DownloadVoskModel>("downloadVoskModel") {
+    modelName.set("vosk-model-small-es-0.42")
+    outputDir.set(layout.buildDirectory.dir("generated/voskModel"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(downloadVoskModel, DownloadVoskModel::outputDir)
+    }
 }
 
 android {
@@ -72,6 +121,9 @@ dependencies {
     // El TLS del emparejamiento usa exportKeyingMaterial, que el Conscrypt de la plataforma no expone
     // con la firma esperada en Android nuevo; con este Conscrypt propio, libadb lo detecta y lo usa.
     implementation(libs.conscrypt.android)
+
+    // Reconocimiento de voz offline para los comandos de voz durante la sesión.
+    implementation(libs.vosk.android)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)

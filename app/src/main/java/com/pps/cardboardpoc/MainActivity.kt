@@ -1,5 +1,6 @@
 package com.pps.cardboardpoc
 
+import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
@@ -9,6 +10,7 @@ import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -94,6 +96,20 @@ class MainActivity : ComponentActivity() {
 
     /** Si el modo fluido puede trabajar (config lista), detectado al abrir sin conectar. */
     private val fluidConfigured = mutableStateOf(false)
+
+    /** Si los comandos de voz están activados y con permiso de micrófono. */
+    private val voiceEnabled = mutableStateOf(false)
+
+    /** Si se pidió activar la voz y falta el permiso de micrófono. */
+    private val voicePermissionMissing = mutableStateOf(false)
+
+    private val microphonePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        VoiceCommands.setEnabled(this, granted)
+        voiceEnabled.value = granted
+        voicePermissionMissing.value = !granted
+    }
 
     /** App que abre el panel al arrancar el visor, a la espera del permiso de Shizuku o del emparejamiento. */
     private var pendingOpenPackage: String? = null
@@ -190,7 +206,12 @@ class MainActivity : ComponentActivity() {
                                     gyroAcceleration = accel
                                     prefs.edit().putFloat("gyro_acceleration", accel).apply()
                                 },
+                                voiceEnabled = voiceEnabled.value,
+                                voicePermissionMissing = voicePermissionMissing.value,
+                                onVoiceEnabledChange = { onVoiceEnabledChange(it) },
+                                onOpenAppPermissions = { openAppPermissions() },
                                 onResetToDefaults = {
+                                    onVoiceEnabledChange(false)
                                     gyroEnabled = true
                                     gyroSensitivity = 1.0f
                                     gyroAcceleration = 1.0f
@@ -240,6 +261,36 @@ class MainActivity : ComponentActivity() {
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
         shizukuRunning.value = Shizuku.pingBinder()
         fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this)
+        refreshVoiceState()
+    }
+
+    /** Relee la preferencia y el permiso de voz: el permiso se puede quitar desde los ajustes del sistema. */
+    private fun refreshVoiceState() {
+        val granted = VoiceCommands.hasPermission(this)
+        // El aviso solo aparece después de intentar activar la voz: si el permiso llegó desde los ajustes
+        // del sistema, la voz queda activada.
+        if (voicePermissionMissing.value && granted) VoiceCommands.setEnabled(this, true)
+        if (granted) {
+            voicePermissionMissing.value = false
+        } else if (VoiceCommands.isEnabled(this)) {
+            voicePermissionMissing.value = true
+        }
+        voiceEnabled.value = VoiceCommands.shouldListen(this)
+    }
+
+    private fun onVoiceEnabledChange(enabled: Boolean) {
+        if (enabled && !VoiceCommands.hasPermission(this)) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        VoiceCommands.setEnabled(this, enabled)
+        if (!enabled) voicePermissionMissing.value = false
+        refreshVoiceState()
+    }
+
+    /** Abre la ficha de la app en los ajustes del sistema, donde se otorga el micrófono si ya se negó. */
+    private fun openAppPermissions() {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
     }
 
     override fun onDestroy() {
@@ -990,6 +1041,10 @@ fun SettingsScreen(
     onGyroEnabledChange: (Boolean) -> Unit,
     onGyroSensitivityChange: (Float) -> Unit,
     onGyroAccelerationChange: (Float) -> Unit,
+    voiceEnabled: Boolean,
+    voicePermissionMissing: Boolean,
+    onVoiceEnabledChange: (Boolean) -> Unit,
+    onOpenAppPermissions: () -> Unit,
     onResetToDefaults: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -1158,6 +1213,67 @@ fun SettingsScreen(
                     }
                 }
 
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "COMANDOS DE VOZ",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Control por voz",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Decí \"tocar\", \"agarrar\", \"soltar\", \"centrar\" o \"volver\", " +
+                                        "solos y con una pausa entre uno y otro",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(checked = voiceEnabled, onCheckedChange = onVoiceEnabledChange)
+                        }
+                        if (voicePermissionMissing) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Column(modifier = Modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp)) {
+                                    Text(
+                                        text = "⚠️ Sin permiso de micrófono no se pueden usar los comandos de voz.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    TextButton(
+                                        onClick = onOpenAppPermissions,
+                                        modifier = Modifier.align(Alignment.End)
+                                    ) {
+                                        Text("Dar permiso")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Reset Button
                 OutlinedButton(
                     onClick = { showResetConfirmDialog = true },
@@ -1209,6 +1325,10 @@ fun SettingsScreenPreview() {
             onGyroEnabledChange = {},
             onGyroSensitivityChange = {},
             onGyroAccelerationChange = {},
+            voiceEnabled = false,
+            voicePermissionMissing = true,
+            onVoiceEnabledChange = {},
+            onOpenAppPermissions = {},
             onResetToDefaults = {},
             onBack = {}
         )
