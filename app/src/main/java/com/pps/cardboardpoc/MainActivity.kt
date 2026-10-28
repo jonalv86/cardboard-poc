@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity() {
             val prefs = remember { getSharedPreferences("celuvr_prefs", Context.MODE_PRIVATE) }
             var gyroEnabled by remember { mutableStateOf(prefs.getBoolean("gyro_enabled", true)) }
             var gyroSensitivity by remember { mutableStateOf(prefs.getFloat("gyro_sensitivity", 1.0f)) }
+            var gyroAcceleration by remember { mutableStateOf(prefs.getFloat("gyro_acceleration", 1.0f)) }
             val deviceHasGyroscope = remember { hasGyroscope() }
             var showSettingsScreen by remember { mutableStateOf(false) }
             var showInfoScreen by remember { mutableStateOf(false) }
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
                                 hasGyroscope = deviceHasGyroscope,
                                 gyroEnabled = gyroEnabled,
                                 gyroSensitivity = gyroSensitivity,
+                                gyroAcceleration = gyroAcceleration,
                                 onGyroEnabledChange = { enabled ->
                                     gyroEnabled = enabled
                                     prefs.edit().putBoolean("gyro_enabled", enabled).apply()
@@ -184,12 +186,18 @@ class MainActivity : ComponentActivity() {
                                     gyroSensitivity = sens
                                     prefs.edit().putFloat("gyro_sensitivity", sens).apply()
                                 },
+                                onGyroAccelerationChange = { accel ->
+                                    gyroAcceleration = accel
+                                    prefs.edit().putFloat("gyro_acceleration", accel).apply()
+                                },
                                 onResetToDefaults = {
                                     gyroEnabled = true
                                     gyroSensitivity = 1.0f
+                                    gyroAcceleration = 1.0f
                                     prefs.edit()
                                         .putBoolean("gyro_enabled", true)
                                         .putFloat("gyro_sensitivity", 1.0f)
+                                        .putFloat("gyro_acceleration", 1.0f)
                                         .apply()
                                 },
                                 onBack = { showSettingsScreen = false }
@@ -978,8 +986,10 @@ fun SettingsScreen(
     hasGyroscope: Boolean,
     gyroEnabled: Boolean,
     gyroSensitivity: Float,
+    gyroAcceleration: Float,
     onGyroEnabledChange: (Boolean) -> Unit,
     onGyroSensitivityChange: (Float) -> Unit,
+    onGyroAccelerationChange: (Float) -> Unit,
     onResetToDefaults: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -1099,6 +1109,37 @@ fun SettingsScreen(
                             )
                         }
 
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        // Acceleration Slider Option
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Aceleración del puntero",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = String.format(Locale.US, "%.1fx", gyroAcceleration),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Slider(
+                                value = gyroAcceleration,
+                                onValueChange = onGyroAccelerationChange,
+                                valueRange = 1.0f..2.0f,
+                                steps = 10,
+                                enabled = hasGyroscope && gyroEnabled
+                            )
+                        }
+
                         // Legend if no gyroscope
                         if (!hasGyroscope) {
                             Spacer(modifier = Modifier.height(4.dp))
@@ -1164,8 +1205,10 @@ fun SettingsScreenPreview() {
             hasGyroscope = true,
             gyroEnabled = true,
             gyroSensitivity = 1.0f,
+            gyroAcceleration = 1.0f,
             onGyroEnabledChange = {},
             onGyroSensitivityChange = {},
+            onGyroAccelerationChange = {},
             onResetToDefaults = {},
             onBack = {}
         )
