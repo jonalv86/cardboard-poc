@@ -595,6 +595,9 @@ class ScreenCaptureService : Service() {
      * que una segunda entrada (stop() dispara onStop(), que vuelve a llamar acá) no toque nada dos veces.
      */
     private fun releaseCapture() {
+        val wasCapturing = isCapturing
+        val host = JoystickManager.accessibilityService
+
         // Primero el listener: si no, una rotación durante el teardown reconstruiría la captura.
         val listener = displayListener
         displayListener = null
@@ -664,6 +667,47 @@ class ScreenCaptureService : Service() {
             isCapturing = false
             JoystickManager.accessibilityService?.setCaptureActive(false)
             JoystickManager.refreshEdgeContact()
+        }
+
+        if (wasCapturing && host != null) {
+            if (ownDisplay != null) {
+                returnToMainScreenAfterRemoval(host, ownDisplay.displayId)
+            } else {
+                MainActivity.bringToFront(host)
+            }
+        }
+    }
+
+    /**
+     * Trae la pantalla principal cuando el sistema terminó de quitar la pantalla virtual. Al quitarla
+     * pasa sus apps a la pantalla física y las deja al frente, así que traerla antes no alcanza: queda
+     * tapada. Si el aviso no llega en [DISPLAY_REMOVAL_TIMEOUT_MS], la trae igual.
+     */
+    private fun returnToMainScreenAfterRemoval(host: Context, displayId: Int) {
+        val displayManager = getSystemService(DisplayManager::class.java)
+        val waiter = object : DisplayManager.DisplayListener, Runnable {
+            private var done = false
+
+            override fun onDisplayAdded(id: Int) = Unit
+            override fun onDisplayChanged(id: Int) = Unit
+            override fun onDisplayRemoved(id: Int) {
+                if (id == displayId) run()
+            }
+
+            override fun run() {
+                if (done) return
+                done = true
+                displayManager.unregisterDisplayListener(this)
+                mainHandler.removeCallbacks(this)
+                Log.d(TAG, "fin de sesión: se vuelve a la pantalla principal")
+                MainActivity.bringToFront(host)
+            }
+        }
+        displayManager.registerDisplayListener(waiter, mainHandler)
+        if (displayManager.getDisplay(displayId) == null) {
+            waiter.run()
+        } else {
+            mainHandler.postDelayed(waiter, DISPLAY_REMOVAL_TIMEOUT_MS)
         }
     }
 
@@ -745,6 +789,9 @@ class ScreenCaptureService : Service() {
 
         /** Cuánto tiene que seguir al frente una app sin DRM para quitar los clones; dos revisiones. */
         private const val MIRROR_OFF_DELAY_MS = 600L
+
+        /** Hasta cuánto se espera el aviso de que se quitó la pantalla virtual para volver a la principal. */
+        private const val DISPLAY_REMOVAL_TIMEOUT_MS = 1000L
 
         /** Cuánto tiene que seguir a la vista nuestra tarea al arrancar para abrir el panel. */
         private const val START_SCREEN_WAIT_MS = 1000L
