@@ -52,8 +52,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Panel de apps del visor: lista todas las apps lanzables, con una sección propia para las recientes
- * y el listado completo debajo. Vive en la tarea de CeluVR y abre cada app sin FLAG_ACTIVITY_NEW_TASK,
- * así que las que lo permiten quedan dentro de esa tarea, que es la que captura la proyección.
+ * (obtenidas de SessionApps o UsageStatsManager) y el listado completo debajo.
  */
 class PanelActivity : ComponentActivity() {
 
@@ -62,7 +61,6 @@ class PanelActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // El panel es el inicio del visor: Atrás no tiene a dónde volver.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = Unit
         })
@@ -109,7 +107,9 @@ class PanelActivity : ComponentActivity() {
         openRequestedPackage()
         lifecycleScope.launch {
             apps.value = withContext(Dispatchers.Default) { loadApps() }
-            recentComponents.value = SessionApps.getRecent()
+            recentComponents.value = withContext(Dispatchers.Default) {
+                RecentAppsProvider.getRecentApps(applicationContext, packageManager)
+            }
         }
         window.decorView.postDelayed(::warnIfPanelNotCaptured, CAPTURE_CHECK_DELAY_MS)
     }
@@ -156,7 +156,7 @@ class PanelActivity : ComponentActivity() {
         try {
             startActivity(intent)
             SessionApps.markUsed(component)
-            recentComponents.value = SessionApps.getRecent()
+            recentComponents.value = RecentAppsProvider.getRecentApps(applicationContext, packageManager)
             pendingLaunch = if (ownTask) null else PendingLaunch(component, SystemClock.uptimeMillis())
             Log.d(TAG, "panel: abre ${component.flattenToShortString()} tareaPropia=$ownTask")
         } catch (e: Exception) {
