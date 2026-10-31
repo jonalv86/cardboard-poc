@@ -2,6 +2,7 @@ package com.pps.cardboardpoc
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.Display
 import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -466,21 +468,36 @@ class MainActivity : ComponentActivity() {
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == component }
     }
 
-    private companion object {
+    companion object {
         /** Paquete de la app a abrir desde el panel (atajo de prueba por adb). */
-        const val EXTRA_DEBUG_OPEN = "abrir"
+        private const val EXTRA_DEBUG_OPEN = "abrir"
 
         /** Con true vuelve al panel (atajo de prueba por adb). */
-        const val EXTRA_DEBUG_HOME = "inicio"
+        private const val EXTRA_DEBUG_HOME = "inicio"
 
         /** Con true arranca el visor sobre la pantalla virtual de Shizuku (atajo de prueba por adb). */
-        const val EXTRA_DEBUG_VIRTUAL = "pantalla_virtual"
+        private const val EXTRA_DEBUG_VIRTUAL = "pantalla_virtual"
 
         /** Con true pasa la pantalla virtual a vertical y con false la vuelve a horizontal (atajo de prueba por adb). */
-        const val EXTRA_DEBUG_PORTRAIT = "vertical"
+        private const val EXTRA_DEBUG_PORTRAIT = "vertical"
 
-        const val SHIZUKU_REQUEST_CODE = 1
-        const val TAG = "CardboardCapture"
+        private const val SHIZUKU_REQUEST_CODE = 1
+        private const val TAG = "CardboardCapture"
+
+        /**
+         * Trae la pantalla principal al frente en la pantalla física desde cualquier contexto. Con
+         * NEW_TASK el sistema usa la tarea de CeluVR si ya existe, y REORDER_TO_FRONT sube esta
+         * actividad dentro de ella sin cerrar las apps abiertas encima. Fuera de primer plano solo
+         * funciona desde el servicio de accesibilidad, que exime a la app del bloqueo de Android a
+         * abrir actividades desde segundo plano.
+         */
+        fun bringToFront(context: Context) {
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+                ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle()
+            )
+        }
     }
 }
 
