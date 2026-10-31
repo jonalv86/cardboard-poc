@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- isAccessibilityTool: Android 15+ descarta los gestos de un servicio que no lo declara sobre vistas
+     marcadas como sensibles, como las del diálogo de permisos del sistema. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes=""
     android:accessibilityFeedbackType="feedbackGeneric"
@@ -7,4 +9,5 @@
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
+    android:isAccessibilityTool="true"
     android:description="@string/joystick_accessibility_description" />
