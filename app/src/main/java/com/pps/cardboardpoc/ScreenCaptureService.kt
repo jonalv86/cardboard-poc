@@ -111,6 +111,9 @@ class ScreenCaptureService : Service() {
         mainHandler.post { overlay?.updateFrame(bitmap) }
     }
     private var imageReader: ImageReader? = null
+
+    /** Escucha de comandos de voz de la sesión; null si no hay sesión o falta el permiso. */
+    private var voiceCommands: VoiceCommands? = null
     private var captureThread: HandlerThread? = null
     private var displayListener: DisplayManager.DisplayListener? = null
     private var captureWidth = 0
@@ -149,7 +152,7 @@ class ScreenCaptureService : Service() {
                     useOwnServer = intent.action == ACTION_START_SERVER
                     startForeground(
                         NOTIFICATION_ID, buildNotification(),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or microphoneType()
                     )
                     startVirtual(intent.getStringExtra(EXTRA_OPEN_PACKAGE))
                 }
@@ -174,12 +177,20 @@ class ScreenCaptureService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or microphoneType()
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
     }
+
+    /**
+     * Tipo microphone si los comandos de voz están activados y con permiso, o 0. El tipo se fija al pasar
+     * a primer plano, con MainActivity a la vista: después, con la app en segundo plano, ya no se puede sumar.
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun microphoneType(): Int =
+        if (VoiceCommands.shouldListen(this)) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
 
     private fun startCapture(resultCode: Int, resultData: Intent) {
         if (mediaProjection != null) return
@@ -223,6 +234,7 @@ class ScreenCaptureService : Service() {
         mainHandler.postDelayed(allowScreenCapture, FULL_SCREEN_CHECK_WINDOW_MS)
         isCapturing = true
         host.setCaptureActive(true)
+        startVoiceCommands()
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -258,6 +270,7 @@ class ScreenCaptureService : Service() {
         captureStartMs = SystemClock.uptimeMillis()
         isCapturing = true
         host.setCaptureActive(true)
+        startVoiceCommands()
         captureThread = HandlerThread("CaptureThread").apply { start() }
 
         rebuildCapture()
@@ -582,6 +595,9 @@ class ScreenCaptureService : Service() {
      * que una segunda entrada (stop() dispara onStop(), que vuelve a llamar acá) no toque nada dos veces.
      */
     private fun releaseCapture() {
+        val wasCapturing = isCapturing
+        val host = JoystickManager.accessibilityService
+
         // Primero el listener: si no, una rotación durante el teardown reconstruiría la captura.
         val listener = displayListener
         displayListener = null
@@ -640,6 +656,10 @@ class ScreenCaptureService : Service() {
         }
         SessionApps.clear()
 
+        val voice = voiceCommands
+        voiceCommands = null
+        voice?.stop()
+
         val window = overlay
         overlay = null
         window?.hide()
@@ -648,6 +668,52 @@ class ScreenCaptureService : Service() {
             JoystickManager.accessibilityService?.setCaptureActive(false)
             JoystickManager.refreshEdgeContact()
         }
+
+        if (wasCapturing && host != null) {
+            if (ownDisplay != null) {
+                returnToMainScreenAfterRemoval(host, ownDisplay.displayId)
+            } else {
+                MainActivity.bringToFront(host)
+            }
+        }
+    }
+
+    /**
+     * Trae la pantalla principal cuando el sistema terminó de quitar la pantalla virtual. Al quitarla
+     * pasa sus apps a la pantalla física y las deja al frente, así que traerla antes no alcanza: queda
+     * tapada. Si el aviso no llega en [DISPLAY_REMOVAL_TIMEOUT_MS], la trae igual.
+     */
+    private fun returnToMainScreenAfterRemoval(host: Context, displayId: Int) {
+        val displayManager = getSystemService(DisplayManager::class.java)
+        val waiter = object : DisplayManager.DisplayListener, Runnable {
+            private var done = false
+
+            override fun onDisplayAdded(id: Int) = Unit
+            override fun onDisplayChanged(id: Int) = Unit
+            override fun onDisplayRemoved(id: Int) {
+                if (id == displayId) run()
+            }
+
+            override fun run() {
+                if (done) return
+                done = true
+                displayManager.unregisterDisplayListener(this)
+                mainHandler.removeCallbacks(this)
+                Log.d(TAG, "fin de sesión: se vuelve a la pantalla principal")
+                MainActivity.bringToFront(host)
+            }
+        }
+        displayManager.registerDisplayListener(waiter, mainHandler)
+        if (displayManager.getDisplay(displayId) == null) {
+            waiter.run()
+        } else {
+            mainHandler.postDelayed(waiter, DISPLAY_REMOVAL_TIMEOUT_MS)
+        }
+    }
+
+    private fun startVoiceCommands() {
+        if (voiceCommands != null || !VoiceCommands.shouldListen(this)) return
+        voiceCommands = VoiceCommands(this).apply { start() }
     }
 
     /** Cierra el frame guardado, si hay. Se llama con [captureLock] tomado. */
@@ -723,6 +789,9 @@ class ScreenCaptureService : Service() {
 
         /** Cuánto tiene que seguir al frente una app sin DRM para quitar los clones; dos revisiones. */
         private const val MIRROR_OFF_DELAY_MS = 600L
+
+        /** Hasta cuánto se espera el aviso de que se quitó la pantalla virtual para volver a la principal. */
+        private const val DISPLAY_REMOVAL_TIMEOUT_MS = 1000L
 
         /** Cuánto tiene que seguir a la vista nuestra tarea al arrancar para abrir el panel. */
         private const val START_SCREEN_WAIT_MS = 1000L

@@ -17,6 +17,7 @@
 - [Pantalla virtual con Shizuku: todas las apps fluidas](#pantalla-virtual)
 - [Servidor propio y autoconexión: sin Shizuku ni computadora](#servidor-propio)
 - [Rediseño visual: retícula, bordes y barra flotante](#rediseno-visual)
+- [Comandos de voz](#comandos-de-voz)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -1310,6 +1311,128 @@ la app capturada y se descartó.
 
 ---
 
+<a id="comandos-de-voz"></a>
+## Comandos de voz
+
+Issue #14. **Fecha:** 28 de octubre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B, Android 16).
+
+Con el visor puesto se puede manejar el cursor diciendo **"tocar"**, **"agarrar"**, **"soltar"**,
+**"centrar"** y **"volver"**, sin tocar el celular ni el control. Se activa desde Ajustes.
+
+### Elegir el motor
+
+Tres condiciones: que funcione **sin internet**, que escuche **todo el tiempo sin sonidos ni avisos**, y
+que no dependa de un servicio con cuenta o clave.
+
+- **`SpeechRecognizer` de Android:** descartado. Cada vez que empieza a escuchar hace un sonido, y la
+  única forma de callarlo es silenciar un canal de audio que también silencia el video de la app que se
+  está mirando.
+- **Picovoice:** descartado. Su clave se valida en línea y el plan gratuito ya no existe.
+- **Vosk** (`com.alphacephei:vosk-android`): elegido. Corre entero en el celular, escucha en continuo y
+  no hace ruido. Usa el modelo **`vosk-model-small-es-0.42`** de Alpha Cephei (Apache 2.0), ya entrenado:
+  no hubo entrenamiento propio.
+
+Antes de escribir código se probó la precisión con **Sayboard**, un teclado de F-Droid que usa Vosk:
+"agarrar" 10/10, "clic" 7/10, "soltar" 6/11. Los errores eran confusiones con palabras parecidas
+("creek", "saltar").
+
+### El micrófono con la app en segundo plano
+
+Durante la sesión, CeluVR no es la app que está adelante, y Android solo entrega audio del micrófono a
+un **servicio en primer plano de tipo `microphone`**. `ScreenCaptureService` suma ese tipo cuando la voz
+está activada, y tiene que hacerlo al arrancar, con `MainActivity` a la vista: después ya no se puede
+agregar. Hacen falta los permisos `RECORD_AUDIO` y `FOREGROUND_SERVICE_MICROPHONE`.
+
+### El problema real: el video también habla
+
+En silencio, todo anduvo desde el primer intento. El problema apareció con un video sonando: el
+micrófono escucha al video, y cualquier frase que contenga un comando lo puede disparar. Se midió con el
+mismo tramo de 5 minutos de un programa de entrevistas en YouTube, sin nadie hablando:
+
+| Configuración | Comandos falsos en 5 min |
+|---|---|
+| Vocabulario restringido a los comandos | 9 |
+| Lo anterior + cancelación de eco (`VOICE_COMMUNICATION`) | 21 |
+| Vocabulario completo + el comando tiene que ser la frase entera | **0** |
+
+- **El vocabulario restringido empeora las cosas.** Con una gramática de tres palabras, Vosk está
+  obligado a interpretar *cualquier* voz como uno de los comandos, y lo hace con confianza alta: el
+  umbral de confianza no sirve para filtrar. Con el vocabulario completo, las palabras que no son
+  comandos salen como lo que son.
+- **La cancelación de eco no resta el audio multimedia** en este equipo, y además sube la ganancia. Se
+  usa la fuente `VOICE_RECOGNITION`.
+- **La regla que resolvió todo:** un comando cuenta solo si es la frase entera. "Tocar" solo dispara;
+  "tocá ahí" o "vamos a tocar" no. Por eso hay que dejar una pausa corta entre comando y comando: dos
+  comandos seguidos forman una sola frase y se ignoran.
+
+### Las palabras
+
+- **"clic" se cambió por "tocar".** Con "clic", 3 de cada 9 intentos salían como "creek", "lic" o "nick",
+  y a veces el modelo recién reconocía la palabra varios segundos después. "Tocar" se reconoce mucho
+  mejor y se acepta también "toca", para el "tocá" del voseo.
+- **Sinónimos para los errores frecuentes:** "soldar" cuenta como "soltar" y "agarra" como "agarrar".
+  No es entrenamiento: es aceptar como comando la transcripción equivocada que el modelo da siempre.
+- "centrar" usa el mismo centrado que el botón del control, y "volver" el mismo Atrás que el botón A.
+
+### La demora
+
+Vosk entrega la frase cuando detecta que terminó, esperando un silencio de entre 0,5 y 1 s según qué
+tan seguro esté. Se bajó en dos pasos:
+
+1. **`setEndpointerDelays(1.5, 0.3, 20)`.** El primer valor es el que importaba: cuando el reconocedor
+   todavía no ve ninguna palabra en la frase, el modelo esperaba **5 s** para cerrarla, y una palabra
+   corta que recién aparecía al cierre llegaba hasta 5 s tarde, con el cursor ya en otro lado.
+2. **Ejecutar sobre el resultado parcial.** Vosk va mostrando lo que entiende mientras uno habla. Si ese
+   parcial es exactamente un comando y no cambia durante **300 ms**, se ejecuta sin esperar el cierre de
+   la frase; si la persona sigue hablando, la palabra siguiente aparece en el parcial antes de ese plazo.
+   Con un video sonando dio 0 comandos falsos en 5 minutos.
+
+Antes del segundo paso, la demora medida entre que el parcial mostraba la palabra y la ejecución era de
+0,5 a 1 s. Con el segundo paso no se volvió a medir, pero en la prueba con el visor se sintió fluido.
+
+### El agarre por voz
+
+"Agarrar" apoya el dedo simulado igual que el gatillo y lo deja apoyado: mover la cabeza arrastra. Se
+suelta con "soltar" o solo, a los **15 s**, por si nunca se dice. Mientras hay un dedo apoyado,
+"tocar" y "agarrar" se ignoran.
+
+Al revisar el código apareció un caso de dedo trabado que con el gatillo no se nota: si el sistema
+cancela el gesto (por ejemplo, porque la app de destino abre otra ventana), el dedo real desaparece
+pero CeluVR seguía creyendo que estaba apoyado, y la voz ignoraba todo hasta el "soltar". Ahora la
+cancelación libera el estado (`JoystickManager.onPressCancelled`). No se pudo provocar la cancelación a
+pedido, así que este arreglo no está probado en el celular.
+
+### El modelo dentro del APK
+
+El modelo pesa unos 40 MB y no se versiona en el repo: la tarea de Gradle `downloadVoskModel` lo baja de
+alphacephei.com al compilar y lo agrega a los assets. El APK pasa de unos 68 a 109 MB. La primera vez
+que arranca una sesión con la voz activada, `StorageService.sync` de Vosk lo copia al almacenamiento de
+la app (compara un archivo `uuid` para no copiarlo de nuevo). Cargarlo tarda unos 2 s, en segundo plano.
+
+### En la app
+
+**Ajustes › Comandos de voz › "Control por voz"**, apagado por defecto. Al prenderlo se pide el permiso
+de micrófono. Si se niega, el switch queda apagado y aparece un aviso con **"Dar permiso"**, que abre la
+ficha de la app en los ajustes del sistema; al volver con el permiso dado, la voz queda activada. En
+este Samsung una sola negación alcanza para que Android no vuelva a preguntar, por eso el botón.
+
+### Resultados
+
+- En el visor: "agarrar", "soltar", "volver" y "centrar" se reconocieron todas las veces; "tocar", casi
+  todas.
+- Igual en modo fluido y en modo proyección.
+- El hilo que escucha usa alrededor del 7 % de un núcleo.
+
+### Limitaciones conocidas
+
+- **Hace falta una pausa entre comandos.** Dichos de corrido se toman como una frase y se ignoran.
+- **No está probado en Android 13 o anterior.** El tipo `microphone` del servicio solo se probó en
+  Android 16.
+- **Los sinónimos son de este modelo.** Si se cambia de modelo, puede equivocarse con otras palabras.
+- **El cambio de ajuste se aplica en la siguiente sesión**, igual que los del giroscopio.
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -1459,8 +1582,12 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [x] **Autoconexión desde el celular, sin computadora:** CeluVR se empareja con el adbd local (setup
       explícito desde "Acerca de › Modo fluido") y lanza el servidor sola; reenciende la depuración
       inalámbrica por su cuenta tras reiniciar.
+- [x] **Comandos de voz** offline con Vosk: tocar, agarrar, soltar, centrar y volver, activables desde
+      Ajustes (ver "Comandos de voz").
 
 **Lo que sigue ahora:**
+
+- [ ] Probar los comandos de voz en un celular con Android 13 o anterior.
 
 - [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al
       apretar el gatillo).

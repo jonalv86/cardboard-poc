@@ -6,6 +6,28 @@ Todos los cambios notables de CeluVR. El formato sigue, a grandes rasgos,
 
 El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.md).
 
+## [Sin publicar]
+
+### Agregado
+
+- **Comandos de voz offline** (issue #14): "tocar", "agarrar", "soltar", "centrar" y "volver" manejan el
+  cursor sin tocar el celular. Solo cuentan dichos solos, así un video con sonido no los dispara. El
+  agarre por voz se suelta solo a los 15 s.
+- **Ajustes › Comandos de voz:** switch "Control por voz", apagado por defecto. Pide el permiso de
+  micrófono; si se niega, queda apagado y avisa, con un botón a los permisos de la app.
+
+### Corregido
+
+- Si el sistema cancela el dedo apoyado, CeluVR ya no lo da por apoyado hasta que se suelte el gatillo.
+
+### Notas técnicas
+
+- Reconocimiento con Vosk y el modelo `vosk-model-small-es-0.42` (Apache 2.0), sin entrenamiento propio.
+  Gradle lo baja en la primera compilación (necesita internet) y va dentro del APK, que pasa de unos 68 a
+  109 MB.
+- Probado en Android 16 (Samsung SM-S938B), en modo fluido y modo proyección. Falta probar en Android 13
+  o anterior.
+
 ## [1.1.0] — 2026-10-22
 
 ### Agregado
