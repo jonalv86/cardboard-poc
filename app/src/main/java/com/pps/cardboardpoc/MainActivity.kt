@@ -73,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -98,6 +99,9 @@ class MainActivity : ComponentActivity() {
 
     /** Si el modo fluido puede trabajar (config lista), detectado al abrir sin conectar. */
     private val fluidConfigured = mutableStateOf(false)
+
+    /** Si se tiene permiso de estadísticas de uso para las apps recientes del sistema. */
+    private val usagePermissionState = mutableStateOf(false)
 
     /** Si los comandos de voz están activados y con permiso de micrófono. */
     private val voiceEnabled = mutableStateOf(false)
@@ -248,7 +252,8 @@ class MainActivity : ComponentActivity() {
                                 isDarkTheme = isDarkTheme,
                                 onToggleDarkMode = { isDarkTheme = !isDarkTheme },
                                 onOpenSettings = { showSettingsScreen = true },
-                                onOpenInfo = { showInfoScreen = true }
+                                onOpenInfo = { showInfoScreen = true },
+                                usagePermissionGranted = usagePermissionState.value
                             )
                         }
                     }
@@ -258,11 +263,16 @@ class MainActivity : ComponentActivity() {
         handleDebugCommand(intent)
     }
 
+    private fun hasUsageStatsPermission(): Boolean {
+        return RecentAppsProvider.hasUsageStatsPermission(this)
+    }
+
     override fun onResume() {
         super.onResume()
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
         shizukuRunning.value = Shizuku.pingBinder()
         fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this)
+        usagePermissionState.value = hasUsageStatsPermission()
         refreshVoiceState()
     }
 
@@ -522,10 +532,12 @@ fun CaptureScreen(
     isDarkTheme: Boolean = false,
     onToggleDarkMode: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
-    onOpenInfo: () -> Unit = {}
+    onOpenInfo: () -> Unit = {},
+    usagePermissionGranted: Boolean = true
 ) {
     val appName = stringResource(R.string.app_name)
     val serviceLabel = stringResource(R.string.accessibility_service_label)
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -578,6 +590,41 @@ fun CaptureScreen(
                         contentDescription = "Información",
                         tint = MaterialTheme.colorScheme.primary
                     )
+                }
+            }
+        }
+
+        // Usage Stats Permission Notice Banner
+        if (!usagePermissionGranted) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "ESTADÍSTICAS DE USO REQUERIDAS",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Para mostrar las aplicaciones recientes del sistema en el panel, concedé acceso a estadísticas de uso.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Button(
+                        onClick = {
+                            context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Otorgar permiso")
+                    }
                 }
             }
         }

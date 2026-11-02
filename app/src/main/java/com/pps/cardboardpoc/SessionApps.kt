@@ -21,6 +21,10 @@ object SessionApps {
         used.add(0, component)
     }
 
+    /** Devuelve la lista de componentes recientes. */
+    @Synchronized
+    fun getRecent(): List<ComponentName> = used.toList()
+
     /** Posición de cada app usada (0 = la más reciente), tomada de una vez para ordenar sin cambios en medio. */
     @Synchronized
     fun ranks(): Map<ComponentName, Int> = used.withIndex().associate { (index, app) -> app to index }
