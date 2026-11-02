@@ -19,6 +19,12 @@ interface VirtualDisplayBackend {
     /** Cambia el tamaño y la densidad de la pantalla. */
     fun resize(width: Int, height: Int, densityDpi: Int)
 
+    /**
+     * Lleva las apps abiertas en modo multiventana a [width] x [height], ocupando toda la pantalla.
+     * Ver [com.pps.cardboardpoc.vdisplay.MultiWindowTasks].
+     */
+    fun fitTasks(width: Int, height: Int)
+
     /** Destruye la pantalla. Las apps que estaban en ella pasan a la pantalla física. */
     fun release()
 

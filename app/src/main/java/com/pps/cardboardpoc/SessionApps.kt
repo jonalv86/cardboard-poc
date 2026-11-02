@@ -4,15 +4,12 @@ import android.content.ComponentName
 
 /**
  * Lo que el panel recuerda durante la sesión actual del visor: las apps abiertas, de la más reciente a
- * la más vieja, las que hay que abrir en una tarea propia y las que solo funcionan en una orientación.
+ * la más vieja, y las que hay que abrir en una tarea propia.
  */
 object SessionApps {
 
     private val used = mutableListOf<ComponentName>()
     private val ownTask = mutableSetOf<ComponentName>()
-
-    /** Orientación fija de cada app, por paquete: true vertical, false horizontal. */
-    private val lockedOrientation = mutableMapOf<String, Boolean>()
 
     /** Registra que se abrió [component]; pasa a ser la más reciente. */
     @Synchronized
@@ -39,24 +36,10 @@ object SessionApps {
     @Synchronized
     fun needsOwnTask(component: ComponentName): Boolean = component in ownTask
 
-    /**
-     * Registra que la app de [packageName] solo funciona en vertical ([portrait] true) o en horizontal.
-     * Reemplaza lo anterior: una app puede tener pantallas fijas en cada orientación.
-     */
-    @Synchronized
-    fun lockOrientation(packageName: String, portrait: Boolean) {
-        lockedOrientation[packageName] = portrait
-    }
-
-    /** Orientación fija de la app de [packageName]: true vertical, false horizontal, null cualquiera. */
-    @Synchronized
-    fun lockedPortrait(packageName: String): Boolean? = lockedOrientation[packageName]
-
     /** Olvida lo registrado; se llama al terminar la sesión del visor. */
     @Synchronized
     fun clear() {
         used.clear()
         ownTask.clear()
-        lockedOrientation.clear()
     }
 }

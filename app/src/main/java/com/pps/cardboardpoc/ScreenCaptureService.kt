@@ -31,6 +31,7 @@ import android.view.Display
 import android.view.WindowManager
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -74,10 +75,17 @@ class ScreenCaptureService : Service() {
     private var virtualBackend: VirtualDisplayBackend? = null
 
     /**
-     * Sigue la app al frente: gira la pantalla según la orientación que exige y decide si se la
-     * muestra con clones. Solo existe con la pantalla virtual.
+     * Sigue la app al frente: decide la orientación con [FrontAppOrientation], ajusta el tamaño de las
+     * tareas al cambiar de app y decide si se la muestra con clones. Solo existe con la pantalla
+     * virtual.
      */
     private var frontAppDetector: FrontAppDetector? = null
+
+    /** App al frente en la última revisión del detector; null sobre el panel. */
+    private var lastFrontApp: String? = null
+
+    /** Hilo de los pedidos al backend sobre las tareas de las apps, que cruzan procesos. */
+    private val taskExecutor = Executors.newSingleThreadExecutor()
 
     /**
      * Si los clones de la pantalla virtual son los que la muestran. Mientras tanto los frames del
@@ -168,6 +176,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         releaseCapture()
+        taskExecutor.shutdown()
         super.onDestroy()
     }
 
@@ -281,9 +290,15 @@ class ScreenCaptureService : Service() {
         }
         JoystickManager.targetDisplayId = display.displayId
         registerDisplayListener()
+        val orientation = FrontAppOrientation()
         frontAppDetector = FrontAppDetector(host, mainHandler) { front ->
-            frontAppOrientationLocked = front.lockedPortrait != null
-            front.lockedPortrait?.let { setPortrait(it) }
+            // Al volver a una app el sistema puede abrir su tarea con el último tamaño de ventana que
+            // tuvo, en vez del de la pantalla.
+            if (front.packageName != lastFrontApp) {
+                lastFrontApp = front.packageName
+                if (front.packageName != null) fitTasks()
+            }
+            setPortrait(orientation.portrait(portraitState.value, front.packageName, front.fit))
             updateMirror(front.packageName?.let(StreamingApps::usesDrm) == true)
         }.also { it.start() }
         PanelActivity.show(host, openPackage)
@@ -321,6 +336,23 @@ class ScreenCaptureService : Service() {
         Log.d(TAG, "pantalla virtual: vertical=$enabled")
         portraitState.value = enabled
         rebuildCapture()
+    }
+
+    /**
+     * Lleva las apps abiertas en multiventana al tamaño actual de la pantalla virtual: su tamaño no
+     * sigue solo al de la pantalla, ni al girarla.
+     */
+    private fun fitTasks() {
+        val display = virtualBackend ?: return
+        val width = captureWidth
+        val height = captureHeight
+        taskExecutor.execute {
+            try {
+                display.fitTasks(width, height)
+            } catch (e: Exception) {
+                Log.w(TAG, "tareas: no se pudieron ajustar a ${width}x$height", e)
+            }
+        }
     }
 
     /**
@@ -494,6 +526,7 @@ class ScreenCaptureService : Service() {
         if (display != null) {
             display.setSurface(reader.surface)
             display.resize(width, height, densityDpi)
+            fitTasks()
             return
         }
         virtualBackend = try {
@@ -622,7 +655,7 @@ class ScreenCaptureService : Service() {
         val detector = frontAppDetector
         frontAppDetector = null
         if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
-        frontAppOrientationLocked = false
+        lastFrontApp = null
         mirrorActive = false
         mirrorUnavailable = false
         virtualMode = false
@@ -867,14 +900,6 @@ class ScreenCaptureService : Service() {
 
         /** Si la pantalla virtual del visor está en vertical. Con la proyección es siempre false. */
         val portrait: StateFlow<Boolean> = portraitState
-
-        /**
-         * Si la app al frente en la pantalla virtual solo funciona en una orientación: se la muestra
-         * así y no se la puede girar. Lo lee el hilo de render para armar la barra.
-         */
-        @Volatile
-        var frontAppOrientationLocked = false
-            private set
 
         /** Intent que pasa la pantalla virtual a vertical, o la devuelve a horizontal. */
         fun portraitIntent(context: Context, enabled: Boolean): Intent =
