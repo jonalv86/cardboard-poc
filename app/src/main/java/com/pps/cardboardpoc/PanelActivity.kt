@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ResolveInfo
+import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -12,6 +14,7 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,9 +49,11 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.pps.cardboardpoc.ui.theme.CeluVRTheme
+import com.pps.cardboardpoc.vdisplay.MultiWindowTasks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 /**
  * Panel de apps del visor: lista todas las apps lanzables, con una sección propia para las recientes
@@ -146,15 +151,22 @@ class PanelActivity : ComponentActivity() {
             .sortedBy { it.label.lowercase() }
     }
 
+    /**
+     * Abre [component]. En la pantalla virtual cada app va en su propia tarea, en modo multiventana; con
+     * la proyección se abre dentro de la tarea de CeluVR, que es la que se captura, salvo las que se
+     * cierran solas ahí.
+     */
     private fun launch(component: ComponentName) {
-        val ownTask = SessionApps.needsOwnTask(component)
+        val virtual = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY
+        val ownTask = virtual || SessionApps.needsOwnTask(component)
         val flags = if (ownTask) Intent.FLAG_ACTIVITY_NEW_TASK else Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
             .setComponent(component)
             .addFlags(flags)
         try {
-            startActivity(intent)
+            startActivity(intent, if (virtual) multiWindowOptions() else null)
             SessionApps.markUsed(component)
             recentComponents.value = RecentAppsProvider.getRecentApps(applicationContext, packageManager)
             pendingLaunch = if (ownTask) null else PendingLaunch(component, SystemClock.uptimeMillis())
@@ -162,6 +174,25 @@ class PanelActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "panel: no se pudo abrir ${component.flattenToShortString()}", e)
         }
+    }
+
+    /**
+     * Opciones para abrir una app en modo multiventana ocupando toda la pantalla virtual. Ver
+     * [MultiWindowTasks]. Si el sistema no acepta el modo, la app se abre como siempre.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun multiWindowOptions(): Bundle {
+        val options = ActivityOptions.makeBasic()
+            .setLaunchBounds(Rect(0, 0, JoystickManager.screenWidth, JoystickManager.screenHeight))
+        try {
+            HiddenApiBypass.invoke(
+                ActivityOptions::class.java, options, "setLaunchWindowingMode",
+                MultiWindowTasks.WINDOWING_MODE_MULTI_WINDOW
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "panel: no se pudo pedir el modo multiventana", e)
+        }
+        return options.toBundle()
     }
 
     private fun reopenIfClosedOnLaunch() {

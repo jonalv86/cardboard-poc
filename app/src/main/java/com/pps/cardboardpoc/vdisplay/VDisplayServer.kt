@@ -203,6 +203,13 @@ object VDisplayServer {
             callback?.let { invoke("resizeVirtualDisplay", it, width, height, densityDpi) }
         }
 
+        override fun fitTasks(width: Int, height: Int) {
+            if (callback == null) return
+            val activityTaskManager =
+                asInterface("android.app.IActivityTaskManager", serviceBinder("activity_task"))
+            MultiWindowTasks.fit(activityTaskManager, displayId, width, height)
+        }
+
         override fun release() {
             callback?.let { invoke("releaseVirtualDisplay", it) }
             callback = null

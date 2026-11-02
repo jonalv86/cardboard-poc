@@ -23,6 +23,10 @@ class ServerDisplay private constructor(
         server.resize(width, height, densityDpi)
     }
 
+    override fun fitTasks(width: Int, height: Int) {
+        server.fitTasks(width, height)
+    }
+
     override fun release() {
         server.release()
     }

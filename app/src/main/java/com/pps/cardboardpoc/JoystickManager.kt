@@ -473,11 +473,10 @@ object JoystickManager {
     }
 
     /**
-     * Pasa la app a la vista a vertical, o la devuelve a horizontal. Fuera de la captura, o con una app
-     * que solo funciona en una orientación, no hace nada.
+     * Pasa la app a la vista a vertical, o la devuelve a horizontal. Fuera de la captura no hace nada.
      */
     fun togglePortrait() {
-        if (!ScreenCaptureService.isCapturing || ScreenCaptureService.frontAppOrientationLocked) return
+        if (!ScreenCaptureService.isCapturing) return
         val service = accessibilityService ?: return
         val portrait = !ScreenCaptureService.portrait.value
         Log.d(TAG, "Vertical: $portrait")

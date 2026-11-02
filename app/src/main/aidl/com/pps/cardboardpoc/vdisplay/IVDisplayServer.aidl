@@ -19,6 +19,12 @@ interface IVDisplayServer {
     /** Cambia el tamaño y la densidad de la pantalla. */
     void resize(int width, int height, int densityDpi);
 
+    /**
+     * Lleva las apps abiertas en modo multiventana en la pantalla a [width] x [height], ocupando toda
+     * la pantalla.
+     */
+    void fitTasks(int width, int height);
+
     /** Destruye la pantalla. Las apps que estaban en ella pasan a la pantalla física. */
     void release();
 

@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import androidx.annotation.RequiresApi
+import com.pps.cardboardpoc.vdisplay.MultiWindowTasks
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
@@ -34,6 +35,14 @@ class ShizukuDisplay private constructor(
 
     override fun resize(width: Int, height: Int, densityDpi: Int) {
         invoke("resizeVirtualDisplay", callback, width, height, densityDpi)
+    }
+
+    override fun fitTasks(width: Int, height: Int) {
+        val activityTaskManager = asInterface(
+            "android.app.IActivityTaskManager",
+            ShizukuBinderWrapper(SystemServiceHelper.getSystemService("activity_task"))
+        )
+        MultiWindowTasks.fit(activityTaskManager, displayId, width, height)
     }
 
     override fun release() {
