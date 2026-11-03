@@ -4,12 +4,13 @@ import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
 
 /**
  * Sigue qué app está al frente en la pantalla virtual del visor y cómo encaja su ventana en ella. Cada
- * revisión informa la app al frente con [onCheck].
+ * revisión informa la app al frente con [onCheck], en [handler].
  */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 class FrontAppDetector(
@@ -25,24 +26,35 @@ class FrontAppDetector(
     data class FrontApp(val packageName: String?, val fit: WindowFit)
 
     private val bounds = Rect()
-    private var running = false
 
-    private val tick = object : Runnable {
+    @Volatile
+    private var running = false
+    private var worker: HandlerThread? = null
+
+    // La lista de ventanas se pide en un hilo propio: el sistema demora la respuesta hasta que termina
+    // la transición en curso, y esa transición espera a que las ventanas de CeluVR dibujen. Pedida
+    // desde el hilo principal, cada uno espera al otro hasta el timeout de 5 s del sistema.
+    private inner class Tick(private val workerHandler: Handler) : Runnable {
         override fun run() {
-            onCheck(frontApp())
-            if (running) handler.postDelayed(this, CHECK_INTERVAL_MS)
+            val front = frontApp()
+            handler.post { if (running) onCheck(front) }
+            if (running) workerHandler.postDelayed(this, CHECK_INTERVAL_MS)
         }
     }
 
     fun start() {
         if (running) return
         running = true
-        handler.post(tick)
+        val thread = HandlerThread("FrontAppDetector").apply { start() }
+        worker = thread
+        val workerHandler = Handler(thread.looper)
+        workerHandler.post(Tick(workerHandler))
     }
 
     fun stop() {
         running = false
-        handler.removeCallbacks(tick)
+        worker?.quitSafely()
+        worker = null
     }
 
     private fun frontApp(): FrontApp {

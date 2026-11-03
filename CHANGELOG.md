@@ -15,10 +15,42 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   agarre por voz se suelta solo a los 15 s.
 - **Ajustes › Comandos de voz:** switch "Control por voz", apagado por defecto. Pide el permiso de
   micrófono; si se niega, queda apagado y avisa, con un botón a los permisos de la app.
+- **Pantalla de Ajustes**, desde el engranaje de la pantalla principal: giroscopio (activarlo,
+  sensibilidad y aceleración del puntero), comandos de voz, modo fluido y "Restablecer".
+- **Video con DRM en modo fluido** (Netflix, Disney+, Prime Video, Max y otras): el visor muestra copias de
+  la pantalla que compone el sistema, sin corrección de lente.
+- **Apps recientes en el panel:** sección "RECIENTES" con las apps abiertas durante la sesión.
+- **Setup guiado del modo fluido** (issues #39 y #40), en **Ajustes › Modo fluido**: pasos con tilde, un
+  botón que lleva a "Acerca del teléfono" o a "Depuración inalámbrica" según lo que falte, y un marco
+  violeta sobre la opción a tocar. El flotante del código es una burbuja arrastrable que se abre sola
+  cuando aparece el diálogo de vinculación, con el teclado arriba.
+- **Switch "Modo fluido"** para apagarlo sin perder la vinculación ni apagar la depuración inalámbrica. Al
+  encenderlo prueba la vinculación guardada y no pide código.
+- **Loader al iniciar en modo fluido** (issue #34): el ícono gira en vaivén hasta que el visor abre, y si
+  falla, un aviso explica por qué (sin Wi-Fi, vinculación quitada, depuración inalámbrica apagada, servidor
+  que no arrancó) y ofrece seguir en modo normal.
+- Chip **"Fluido sin Wi-Fi"** en la pantalla principal cuando el modo fluido está configurado pero falta
+  la red.
+
+### Cambiado
+
+- **Apps verticales en modo fluido:** cada app se abre en multiventana, así una que solo funciona en
+  vertical llena la pantalla horizontal en lugar de verse con bandas. Ninguna app pasa sola a vertical:
+  se usa el botón Vertical de la barra (issues #35 y #27).
+- La configuración del modo fluido pasó de **Acerca de** a **Ajustes**.
+- Al vincular con el código, CeluVR vuelve a la pantalla principal.
+- CeluVR figura una sola vez en "Dispositivos vinculados", como "CeluVR", y quita sola sus entradas
+  viejas al conectar.
 
 ### Corregido
 
 - Si el sistema cancela el dedo apoyado, CeluVR ya no lo da por apoyado hasta que se suelte el gatillo.
+- El gatillo sobre los diálogos de permisos del sistema no hacía nada (issue #29).
+- Al cerrar el visor, otra app quedaba adelante de CeluVR (issue #32).
+- Iniciar el visor en modo fluido tardaba 5 s y el loader se congelaba.
+- Después de "Olvidar emparejamiento", vincular de nuevo fallaba hasta reiniciar la app.
+- "Olvidar emparejamiento" parecía no hacer nada: el servidor del modo fluido seguía vivo.
+- El resaltado marcaba "Depuración inalámbrica" en lugar de la opción de vincular con código.
 
 ### Notas técnicas
 
@@ -27,6 +59,10 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   109 MB.
 - Probado en Android 16 (Samsung SM-S938B), en modo fluido y modo proyección. Falta probar en Android 13
   o anterior.
+- Las copias de pantalla para DRM y la multiventana usan interfaces ocultas de Android, desde el servidor
+  propio; con Shizuku no hay copias de pantalla.
+- El servicio de accesibilidad declara `isAccessibilityTool`: Google Play revisa qué apps lo hacen.
+- El resaltado del setup lee los textos de la app Ajustes del celular; está probado en One UI (es-US).
 
 ## [1.1.0] — 2026-10-22
 
@@ -49,12 +85,18 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   el estado, guía la configuración paso a paso o confirma que ya está configurado.
 - **Indicador "Modo fluido / Modo normal"** en la pantalla principal, según el modo fluido esté activo o no.
 - **Ícono nuevo** (casco de VR violeta) en el logo de la app, el launcher y la notificación.
+- **Botón Vertical** en la barra del visor (con la pantalla virtual): pasa la app a vertical, con la misma
+  imagen desenfocada a los costados (issue #15).
 
 ### Cambiado
 
 - Shizuku pasó a ser un **camino alternativo**: si está corriendo, se usa; si no, se usa el servidor
   propio. Ya no es necesario para la fluidez.
 - Los colores del "Acerca de" siguen el patrón de la pantalla principal (títulos en el color del tema).
+
+### Corregido
+
+- El avance por borde se movía a los tirones (issue #25).
 
 ### Notas técnicas
 

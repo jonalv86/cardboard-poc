@@ -18,6 +18,13 @@
 - [Servidor propio y autoconexión: sin Shizuku ni computadora](#servidor-propio)
 - [Rediseño visual: retícula, bordes y barra flotante](#rediseno-visual)
 - [Comandos de voz](#comandos-de-voz)
+- [Avance por borde sin cortes](#avance-fluido)
+- [Apps verticales: botón Vertical y multiventana](#apps-verticales)
+- [Video con DRM: clones de la pantalla](#drm)
+- [Pantalla de Ajustes](#ajustes)
+- [Diálogos del sistema y volver al cerrar](#dialogos-y-cierre)
+- [Apps recientes en el panel](#recientes)
+- [Modo fluido guiado desde Ajustes](#modo-fluido-guiado)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -842,7 +849,8 @@ bien y el arrastre sigue andando.
 1. **En cada inicio hay que elegir "Una sola app" y después CardboardPOC.** No hay API pública para
    evitarlo.
 2. **Las apps que se van a su propia tarea se ven a ~3 fps y sin video.**
-3. **Las apps verticales se ven ocupando toda la pantalla horizontal**, no con bandas.
+3. **Las apps verticales se ven ocupando toda la pantalla horizontal**, no con bandas. (Con la pantalla
+   virtual del modo fluido sí se veían con bandas; ver "Apps verticales: botón Vertical y multiventana".)
 4. **El temblor del cursor con el giroscopio** sigue: el clic ya no falla, pero apuntar fino cuesta.
 5. **El botón de encendido termina la sesión.**
 6. **El cambio a la captura por ventanas tarda ~200 ms**, con la imagen quieta.
@@ -1198,6 +1206,9 @@ falta el permiso `SYSTEM_ALERT_WINDOW`.
 
 ### Configuración explícita y auto-encendido
 
+> Desde el 2 de noviembre la configuración está en **Ajustes › Modo fluido**, con un switch y los pasos
+> guiados; ver "Modo fluido guiado desde Ajustes". Lo que sigue describe cómo quedó en este hito.
+
 El emparejamiento quedó **explícito**, separado de "Iniciar". Antes, "Iniciar" mostraba la ventanita la
 primera vez (o cuando el adbd rechazaba la clave), y eso sorprendía: tras desvincular CeluVR del lado del
 sistema, "Iniciar" seguía pidiendo emparejar aunque se apagaran la depuración inalámbrica y las opciones de
@@ -1433,6 +1444,264 @@ este Samsung una sola negación alcanza para que Android no vuelva a preguntar, 
 
 ---
 
+<a id="avance-fluido"></a>
+## Avance por borde sin cortes
+
+Issue #25. **Fecha:** 16 de octubre de 2026.
+
+El avance por borde se movía a los tirones: la lista avanzaba, se frenaba unos cuadros y volvía a
+arrancar en cada swipe. Medido con un broadcast de prueba que dispara el avance sin control
+(`com.pps.cardboardpoc.debug.AVANCE`, solo en compilaciones depurables) y `dumpsys gfxinfo ... framestats`
+leído cada 0,7 s, aparecieron dos causas:
+
+- **Los callbacks de `dispatchGesture` llegaban tarde.** Corren en el hilo principal, que comparte con
+  el panel de Compose, y se atrasaban de 70 a 190 ms. Mientras tanto el dedo quedaba quieto. Los swipes
+  ahora corren en un hilo propio (`EdgeScroller`).
+- **El dedo se apoyaba quieto.** Entre swipe y swipe, el dedo nuevo frenaba el desplazamiento que había
+  dejado el anterior. Ahora se apoya ya moviéndose, como uno real que agarra la lista en movimiento, y
+  el último tramo puede pasarse un poco del final para no llegar frenado.
+
+Además, el borde tiene histéresis (`EdgeZone`): para dejarlo, el cursor tiene que alejarse unos píxeles.
+Sin eso, el temblor de la cabeza lo hacía entrar y salir del borde varias veces por segundo.
+
+---
+
+<a id="apps-verticales"></a>
+## Apps verticales: botón Vertical y multiventana
+
+Issues #15 y #35. **Fechas:** 16 de octubre y 2 de noviembre de 2026.
+
+### El botón Vertical
+
+Con la pantalla virtual del modo fluido, la barra del visor tiene un botón **Vertical** que pasa la
+pantalla a vertical y la devuelve a horizontal; las apps lo reciben como una rotación. A los costados de
+una imagen vertical se dibuja la misma imagen agrandada, desenfocada y oscurecida, como en los videos
+verticales. El botón no aparece sobre el panel, que siempre se ve en horizontal, ni con la proyección,
+donde la orientación la fija la pantalla física.
+
+La primera versión ponía en vertical, solas, algunas apps conocidas. Se volvió atrás: toda app se ve en
+horizontal hasta que el usuario toca Vertical, y la pantalla vuelve sola a horizontal al pasar a otra
+app o cuando lo que queda al frente solo funciona en horizontal (`FrontAppOrientation`).
+
+### Que una app solo vertical llene la pantalla horizontal
+
+En la pantalla virtual, una app que solo funciona en vertical (Instagram) se veía encajada, con bandas a
+los costados. Lo que funcionó fue abrir cada app desde el panel **en modo multiventana**, en su propia
+tarea (`ActivityOptions.setLaunchWindowingMode`, oculto), y ajustar las tareas al tamaño de la pantalla
+con `IActivityTaskManager.resizeTask` (permisos de shell, desde el servidor) al girar y al volver a una
+app (`MultiWindowTasks`). En multiventana Android no respeta la orientación que pide la app.
+
+Lo que no sirvió:
+
+- `am compat enable OVERRIDE_ANY_ORIENTATION_TO_USER` y `wm set-ignore-orientation-request`: la app
+  sigue pidiendo vertical.
+- **Ventana libre** (freeform): llena bien, pero Samsung le agrega su barra de ventana emergente y la
+  deja siempre arriba, así que el panel no la tapa al tocar Inicio.
+
+Al cerrar el visor, las tareas multiventana pasan a la pantalla física a pantalla completa: el teléfono
+queda normal. Para saber qué app está al frente y cómo encaja su ventana, `FrontAppDetector` mira las
+ventanas de la pantalla virtual cada 300 ms (ver "Modo fluido guiado desde Ajustes" para un bloqueo que
+causaba).
+
+---
+
+<a id="drm"></a>
+## Video con DRM: clones de la pantalla
+
+Issue #37. **Fecha:** 26 de octubre de 2026.
+
+El video de Netflix y similares salía negro porque los frames hacen pantalla virtual → `ImageReader` →
+textura GL, y el reproductor usa una superficie protegida que una pantalla virtual común no puede leer.
+Una pantalla virtual segura no está a nuestro alcance: el sistema la reserva para procesos del sistema.
+
+Lo que funcionó es **no copiar los frames**: el servidor propio pide `IWindowManager.mirrorDisplay`, que
+devuelve un clon de la pantalla virtual que compone el propio sistema, y CeluVR cuelga dos clones de la
+ventana estéreo, uno por ojo, centrados en cada lente. Con eso se vio la película con el visor puesto.
+
+- Se activa solo con las apps de `StreamingApps` al frente (Netflix, Disney+, Prime Video, Max, Paramount+,
+  Hulu, Peacock, Crunchyroll, MUBI, Google TV) y se apaga 600 ms después de que dejan de estarlo: en las
+  transiciones no hay ventana al frente un instante.
+- La retícula, la barra y los avisos se dibujan en otra ventana de accesibilidad transparente encima
+  (`MirrorUiRenderer`), con el mismo código que la vista estéreo (`OverlayUi`).
+- Solo con el servidor propio: Shizuku no ofrece los clones.
+
+**Limitación:** los clones no tienen corrección de lente. Se probó un mosaico de 64 clones deformados
+para aproximarla y se veía muy mal, así que se volvió atrás.
+
+---
+
+<a id="ajustes"></a>
+## Pantalla de Ajustes
+
+**Fechas:** 24 y 28 de octubre de 2026.
+
+Un engranaje en la pantalla principal abre **Ajustes**, con lo que antes estaba fijo en el código:
+
+- **Sensor de giroscopio:** activarlo o no, **Sensibilidad** y **Aceleración del puntero**. Con
+  aceleración por encima de 1, el movimiento de la cabeza pasa por una curva que suaviza los movimientos
+  chicos y amplía los grandes.
+- **Comandos de voz** (ver "Comandos de voz").
+- **Modo fluido** (ver "Modo fluido guiado desde Ajustes").
+- **Restablecer**, que vuelve el giroscopio y la voz a sus valores por defecto.
+
+Los cambios del giroscopio y de la voz se aplican al iniciar la siguiente sesión del visor.
+
+---
+
+<a id="dialogos-y-cierre"></a>
+## Diálogos del sistema y volver al cerrar
+
+### Los toques sobre los diálogos de permisos no hacían nada
+
+Issue #29. **Fecha:** 30 de octubre de 2026. El gatillo sobre el diálogo de permisos del sistema (por
+ejemplo, el de ubicación de una app de cine) no hacía nada. La sospecha del issue era el overlay del
+visor, por protección contra *tapjacking*, y era falsa: pasaba también sin el visor. La causa es que ese
+diálogo marca sus vistas como sensibles (`isAccessibilityDataSensitive`), y desde Android 15 esas vistas
+descartan los gestos de un servicio de accesibilidad que no se declare herramienta de accesibilidad. El
+arreglo fue declarar `android:isAccessibilityTool="true"` en la configuración del servicio. Costo: Google
+Play revisa qué apps lo declaran.
+
+### Al cerrar el visor quedaba otra app adelante
+
+Issue #32. **Fecha:** 30 de octubre de 2026. Al cerrar el visor desde la X, el sistema quita la pantalla
+virtual y pasa sus apps a la pantalla física, dejándolas al frente: CeluVR quedaba tapada. Ahora el
+servicio espera el aviso de que la pantalla se quitó y recién ahí trae la pantalla principal (con hasta
+1 s de espera, por si el aviso no llega).
+
+---
+
+<a id="recientes"></a>
+## Apps recientes en el panel
+
+Issue #44. **Fechas:** 28 de octubre al 2 de noviembre de 2026.
+
+El panel muestra arriba una sección **RECIENTES** con las apps abiertas durante la sesión del visor, de la
+más reciente a la más vieja, y abajo **TODAS LAS APLICACIONES**. La lista vive solo durante la sesión
+(`SessionApps`) y se borra al cerrar el visor.
+
+Se probó tomar las recientes del sistema con `UsageStatsManager`, que sobreviven entre sesiones, pero
+necesitan el permiso de estadísticas de uso, que en la práctica no se pudo otorgar. Se quitó, junto con
+el aviso que lo pedía.
+
+---
+
+<a id="modo-fluido-guiado"></a>
+## Modo fluido guiado desde Ajustes
+
+Issues #39, #34 y #40. **Fecha:** 2 de noviembre de 2026. **Equipo de prueba:** el mismo Samsung
+(SM-S938B, Android 16, idioma es-US).
+
+Configurar el modo fluido pedía recorrer los ajustes del sistema por cuenta propia, con la ventanita del
+código anclada abajo, y la configuración estaba en "Acerca de". Este hito la lleva a **Ajustes**, guía
+cada paso y agrega un loader y mensajes de error al tocar Iniciar.
+
+### Un botón que sabe adónde ir
+
+La tarjeta **Modo fluido (opcional)** de Ajustes muestra los tres pasos (opciones de desarrollador,
+depuración inalámbrica, vincular) con una tilde en los que ya están hechos, y **un solo botón** que lleva
+al lugar del paso pendiente (`FluidSetupStep`):
+
+- Sin opciones de desarrollador: **"Ir a Acerca del teléfono"** (`ACTION_DEVICE_INFO_SETTINGS`).
+- Con ellas: **"Ir a Depuración inalámbrica"**, que abre Opciones de desarrollador con esa fila resaltada
+  (extras `:settings:fragment_args_key` = `toggle_adb_wireless`; no es API pública y un Ajustes que no la
+  soporte simplemente la ignora). La pantalla de la depuración inalámbrica no tiene intent propio.
+
+El estado se lee de los ajustes reales (`development_settings_enabled`, `adb_wifi_enabled`) y se sigue con
+un `ContentObserver`, así el texto cambia en cuanto el usuario activa algo.
+
+### El flotante del código
+
+Al salir a los ajustes queda encima una **burbuja con el ícono de CeluVR**, que se puede arrastrar y que al
+tocarla se abre en el panel del código. El panel arranca **arriba** (el diálogo del sistema aparece abajo),
+se puede arrastrar para arriba o para abajo y se minimiza con "—".
+
+- **Se abre solo cuando aparece el diálogo de vinculación.** Un `AdbMdns` sobre `_adb-tls-pairing._tcp`
+  avisa cuando el sistema anuncia el servicio (el diálogo se abrió) y cuando lo retira (se cerró). Al
+  cerrarse, borra el código tipeado, que ya no sirve.
+- **Marca qué tocar.** Cada 700 ms busca en la pantalla de Ajustes la fila del paso actual y le dibuja
+  encima un marco violeta que titila, en una ventana que no recibe toques. Los textos se leen de los
+  **recursos de la app Ajustes del propio celular** (`getResourcesForApplication("com.android.settings")`
+  con `adb_pair_method_code_title`, `adb_wireless_settings`, `build_number`), así salen en su idioma y con
+  la redacción del fabricante. Escritos a mano fallaban: en es-US la opción dice *"Vincular dispositivo con
+  **un** código de vinculación"*, y la búsqueda por "con código" caía en el título de la pantalla. Solo se
+  marcan filas tocables.
+- Como el servicio no se suscribe a eventos de accesibilidad, la lista de ventanas queda congelada si no
+  se llama `clearCache()` antes de leerla.
+
+Al vincular, CeluVR conecta, deja el modo fluido configurado y **vuelve a la pantalla principal**, en la
+pantalla física (`setLaunchDisplayId(DEFAULT_DISPLAY)`).
+
+### Encender, apagar y olvidar
+
+- **Switch "Modo fluido":** gris y sin acción hasta configurarlo. Apagarlo corta la conexión y termina el
+  servidor, pero **conserva la vinculación** y **no toca la depuración inalámbrica**, que otra app puede
+  estar usando. Encenderlo prueba primero la vinculación guardada ("Buscando una vinculación anterior…"):
+  si el celular la sigue reconociendo, se enciende sin pedir código y sin salir de Ajustes.
+- **"Olvidar emparejamiento":** desvincula a CeluVR de la depuración inalámbrica, termina el servidor y
+  apaga la depuración inalámbrica.
+
+### Un solo "CeluVR" en Dispositivos vinculados
+
+Cada emparejamiento sumaba otra entrada a la lista del sistema. Ahora CeluVR se presenta con el nombre fijo
+**"CeluVR"** y la primera vez que conecta en cada arranque de la app quita las entradas suyas que no son la
+conexión actual. Desvincular es una API oculta (`IAdbManager.unpairDevice`) que pide un permiso que solo
+tiene shell, así que lo hace `PairedDevicesCleaner`, un `main` que se lanza con `app_process` por el shell
+de la conexión, igual que el servidor. En Android 16 `getPairedDevices` devuelve un arreglo de
+`FingerprintAndPairDevice` y no un `Map` como en versiones anteriores; se manejan los dos. Si no encuentra
+ninguna entrada conectada no borra nada, para no llevarse la que está en uso.
+
+### Iniciar: loader y errores
+
+Al tocar Iniciar con el modo fluido, la pantalla queda bloqueada con el **ícono girando sobre su eje
+vertical en vaivén** (lento de frente, rápido de canto) hasta que el visor abre o falla. Si falla, un
+diálogo explica por qué y ofrece **"Usar modo normal"**:
+
+- Sin Wi-Fi: se avisa antes de intentar, porque sin red el adbd no arranca y los reintentos solo hacen
+  esperar. Un servidor ya vivo no la necesita.
+- El celular ya no reconoce a CeluVR (se quitó la vinculación desde el sistema).
+- No se pudo conectar con la depuración inalámbrica, o conectó pero el servidor no arrancó.
+- El visor no abrió en 10 s.
+
+Sin Wi-Fi la pantalla principal dice **"Fluido sin Wi-Fi"** en lugar de "Modo fluido". La Wi-Fi se sigue
+con un `NetworkCallback` y cuenta cualquier red Wi-Fi, aunque no tenga internet.
+
+### Lo que apareció al probar
+
+1. **"Olvidar" parecía no hacer nada.** Nunca se terminaba el servidor, y mientras vive la tarjeta lo
+   cuenta como configurado. Ahora apagar y olvidar llaman `shutdown()` del servidor.
+2. **Después de olvidar, vincular de nuevo fallaba hasta reiniciar la app.** El emparejamiento daba OK y la
+   conexión, 50 ms después, era rechazada; el log de `adbd` decía `CERTIFICATE_VERIFY_FAILED`. La causa
+   está en libadb: `SslUtils` arma el `SSLContext` una sola vez por proceso, con la primera clave que usa,
+   y "Olvidar" generaba una clave nueva. El emparejamiento registraba la nueva y la conexión presentaba la
+   vieja. Ahora la identidad adb de CeluVR es fija: olvidar la desvincula del celular pero no la cambia.
+3. **Iniciar tardaba 5 s y el loader se congelaba.** El hilo principal quedaba bloqueado en
+   `getWindowsOnAllDisplays()`, que `FrontAppDetector` pedía desde ahí. Mientras se abre el panel, el sistema
+   no responde esa llamada hasta que termina la transición, y la transición espera a que dibujen las
+   ventanas de CeluVR, que viven en ese mismo hilo: se esperaban mutuamente hasta el timeout de 5 s del
+   sistema (`Sync group ... timeout`, `Skipped 606 frames`). Ahora la consulta corre en un hilo propio y el
+   visor abre en 0,1 a 0,2 s. El ícono del loader, además, es un vector animado, que corre en el hilo de
+   render y sigue girando aunque el principal esté ocupado.
+4. **MainActivity se recreaba en cada inicio**, porque el visor pone la pantalla en horizontal y ella es
+   vertical. Ahora declara `configChanges` para la rotación, como el panel.
+5. **El puerto del diálogo puede quedar viejo.** Si se vincula contra el puerto que vio el flotante y falla,
+   se vuelve a buscar el diálogo por mDNS y, si anuncia otro puerto, se reintenta con ese.
+
+### Resultados
+
+Probado de punta a punta en el SM-S938B manejando el celular por adb: el resaltado cae sobre "Vincular
+dispositivo con un código de vinculación", el panel se abre solo con el diálogo, vincular vuelve a la
+pantalla principal en modo fluido, el switch apaga y enciende sin código y sin salir de Ajustes, apagar
+deja la depuración inalámbrica encendida, olvidar deja la tarjeta en los pasos con el switch gris, y
+vincular de nuevo después de olvidar funciona sin reiniciar la app.
+
+### Limitaciones conocidas
+
+- **Los textos y extras de Ajustes son de AOSP y One UI.** En otro fabricante el resaltado puede no
+  encontrar la fila; el flotante y el código funcionan igual.
+- **Olvidar apaga la depuración inalámbrica**, aunque otra app la esté usando. Apagar el switch no la toca.
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -1544,6 +1813,26 @@ app estaba "sucia" de pruebas anteriores. Era falso: en el selector se había to
 no CardboardPOC. El log del sistema lo dice sin vueltas: la línea `findTaskToMoveToFront` muestra qué
 tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMoveToFront`).
 
+**13. Si la app se congela, preguntarle al hilo principal en qué está.** *(Modo fluido guiado)*
+
+Un congelamiento de 5 s al iniciar parecía lentitud del servidor. `Choreographer: Skipped 606 frames`
+confirmó que era el hilo principal, y la pila lo dijo de una: estaba esperando una llamada binder. La app
+es depurable, así que alcanza con `jdb` por JDWP, sin root:
+
+```
+adb forward tcp:8700 jdwp:<pid>
+jdb -connect com.sun.jdi.SocketAttach:hostname=localhost,port=8700
+```
+
+y, en el momento del bloqueo, `suspend` y `where all`. En Windows hay que usar `-connect` así: `-attach`
+intenta memoria compartida y falla. `debuggerd -j` pide root. Cuidado: `am force-stop` deshabilita el
+servicio de accesibilidad y hay que volver a activarlo.
+
+**14. Si adb rechaza una conexión, el motivo lo dice adbd, no la librería.** *(Modo fluido guiado)*
+
+libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` muestra la causa real
+(acá, `CERTIFICATE_VERIFY_FAILED`) y las claves que cargó.
+
 ---
 
 <a id="convenciones"></a>
@@ -1580,10 +1869,17 @@ tarea trajo el selector al frente (`adb logcat -d | Select-String findTaskToMove
 - [x] **Servidor propio sin Shizuku:** CeluVR crea la pantalla confiable con su propio proceso
       `app_process`, sin la app Shizuku (ver "Servidor propio y autoconexión").
 - [x] **Autoconexión desde el celular, sin computadora:** CeluVR se empareja con el adbd local (setup
-      explícito desde "Acerca de › Modo fluido") y lanza el servidor sola; reenciende la depuración
+      explícito, hoy desde "Ajustes › Modo fluido") y lanza el servidor sola; reenciende la depuración
       inalámbrica por su cuenta tras reiniciar.
 - [x] **Comandos de voz** offline con Vosk: tocar, agarrar, soltar, centrar y volver, activables desde
       Ajustes (ver "Comandos de voz").
+- [x] **Avance por borde sin cortes** y **apps verticales** con botón Vertical y multiventana.
+- [x] **Video con DRM** en modo fluido, con clones de la pantalla (sin corrección de lente).
+- [x] **Pantalla de Ajustes** (giroscopio, voz, modo fluido), **apps recientes** en el panel, toques sobre
+      los diálogos de permisos y volver a CeluVR al cerrar el visor.
+- [x] **Modo fluido guiado desde Ajustes:** pasos con resaltado, flotante del código que se abre solo,
+      switch para apagarlo sin perder la vinculación, una sola entrada "CeluVR" y loader con errores al
+      iniciar.
 
 **Lo que sigue ahora:**
 

@@ -2,6 +2,7 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp" android:height="48dp"
     android:viewportWidth="573" android:viewportHeight="573">
+    <group android:name="giro" android:pivotX="286.5" android:pivotY="286.5">
     <group android:translateY="70.5">
         <group android:scaleX="0.25" android:scaleY="0.25">
             <group android:translateX="0" android:translateY="1728">
@@ -10,5 +11,6 @@
                 </group>
             </group>
         </group>
+    </group>
     </group>
 </vector>
