@@ -66,9 +66,12 @@ class AdbConnectionManager private constructor(context: Context) : AbsAdbConnect
 
     override fun getCertificate(): Certificate = certificate
 
-    override fun getDeviceName(): String = "CeluVR"
+    override fun getDeviceName(): String = DEVICE_NAME
 
     companion object {
+        /** Nombre con el que CeluVR figura en "Dispositivos vinculados" de la Depuración inalámbrica. */
+        const val DEVICE_NAME = "CeluVR"
+
         private const val KEY_FILE = "adb_private.key"
         private const val CERT_FILE = "adb_cert.pem"
 
@@ -135,15 +138,5 @@ class AdbConnectionManager private constructor(context: Context) : AbsAdbConnect
             instance ?: synchronized(this) {
                 instance ?: AdbConnectionManager(context.applicationContext).also { instance = it }
             }
-
-        /** Borra la identidad adb (clave y certificado) y descarta la instancia, para re-generarla. */
-        fun reset(context: Context) {
-            synchronized(this) {
-                runCatching { instance?.close() }
-                instance = null
-            }
-            File(context.filesDir, KEY_FILE).delete()
-            File(context.filesDir, CERT_FILE).delete()
-        }
     }
 }

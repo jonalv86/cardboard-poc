@@ -8,15 +8,23 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.drawable.AnimatedVectorDrawable
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
+import android.widget.ImageView
 import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -25,6 +33,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,10 +52,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,6 +72,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +81,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -82,7 +93,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.pps.cardboardpoc.adb.AdbServerLauncher
-import com.pps.cardboardpoc.adb.PairingOverlay
+import com.pps.cardboardpoc.adb.FluidSetup
+import com.pps.cardboardpoc.adb.FluidSetupStep
+import com.pps.cardboardpoc.adb.WirelessDebugging
+import com.pps.cardboardpoc.vdisplay.VDisplayConnection
 import com.pps.cardboardpoc.ui.theme.CeluVRTheme
 import rikka.shizuku.Shizuku
 
@@ -98,6 +112,43 @@ class MainActivity : ComponentActivity() {
 
     /** Si el modo fluido puede trabajar (config lista), detectado al abrir sin conectar. */
     private val fluidConfigured = mutableStateOf(false)
+
+    /** Si el modo fluido se apagó con la vinculación guardada, lista para volver a encenderlo. */
+    private val fluidTurnedOff = mutableStateOf(false)
+
+    /** Mientras se olvida el emparejamiento, que conecta al adbd para desvincular y tarda unos segundos. */
+    private val forgettingFluid = mutableStateOf(false)
+
+    /** Paso del setup del modo fluido según los ajustes del teléfono. */
+    private val fluidStep = mutableStateOf(FluidSetupStep.DEVELOPER_OPTIONS)
+
+    /** Si hay alguna red Wi-Fi conectada, que el modo fluido necesita para conectar al adbd local. */
+    private val wifiConnected = mutableStateOf(false)
+
+    private val wifiNetworks = mutableSetOf<Network>()
+
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = runOnUiThread {
+            wifiNetworks += network
+            wifiConnected.value = true
+        }
+
+        override fun onLost(network: Network) = runOnUiThread {
+            wifiNetworks -= network
+            wifiConnected.value = wifiNetworks.isNotEmpty()
+        }
+    }
+
+    /** Arranque del visor en modo fluido: mientras dura, la pantalla queda bloqueada con el loader. */
+    private val startState = mutableStateOf<StartState>(StartState.Idle)
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val viewerStartTimeout = Runnable {
+        if (startState.value == StartState.Starting && !ScreenCaptureService.isCapturing) {
+            startState.value = StartState.Failed("El modo fluido se conectó, pero el visor no llegó a abrirse. Volvé a intentar o seguí en modo normal.")
+        }
+    }
 
     /** Si los comandos de voz están activados y con permiso de micrófono. */
     private val voiceEnabled = mutableStateOf(false)
@@ -115,9 +166,6 @@ class MainActivity : ComponentActivity() {
 
     /** App que abre el panel al arrancar el visor, a la espera del permiso de Shizuku o del emparejamiento. */
     private var pendingOpenPackage: String? = null
-
-    /** Ventanita flotante para tipear el código de emparejamiento sobre el diálogo del sistema. */
-    private var pairingOverlay: PairingOverlay? = null
 
     private val shizukuReceived = Shizuku.OnBinderReceivedListener { shizukuRunning.value = true }
     private val shizukuDead = Shizuku.OnBinderDeadListener { shizukuRunning.value = false }
@@ -167,6 +215,15 @@ class MainActivity : ComponentActivity() {
         Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
         Shizuku.addBinderDeadListener(shizukuDead)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
+        wifiConnected.value = WirelessDebugging.hasWifi(this)
+        // Una Wi-Fi sin internet también sirve para la depuración inalámbrica.
+        getSystemService(ConnectivityManager::class.java).registerNetworkCallback(
+            NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build(),
+            wifiCallback
+        )
 
         setContent {
             val systemInDark = isSystemInDarkTheme()
@@ -184,10 +241,28 @@ class MainActivity : ComponentActivity() {
                     val serviceConnected by JoystickManager.serviceConnected.collectAsState()
                     val fullScreenRejected by ScreenCaptureService.fullScreenRejected.collectAsState()
                     val adbStatus by AdbServerLauncher.status.collectAsState()
-                    val fluidActive = shizukuRunning.value ||
-                        fluidConfigured.value ||
-                        adbStatus == AdbServerLauncher.Status.READY ||
+                    val fluidSetupState by FluidSetup.state.collectAsState()
+                    LaunchedEffect(fluidSetupState) {
+                        refreshFluidState()
+                        if (fluidSetupState == FluidSetup.State.CONFIGURED) {
+                            showSettingsScreen = false
+                            showInfoScreen = false
+                        }
+                    }
+                    val capturing by ScreenCaptureService.capturing.collectAsState()
+                    LaunchedEffect(capturing) {
+                        if (capturing && startState.value == StartState.Starting) {
+                            mainHandler.removeCallbacks(viewerStartTimeout)
+                            startState.value = StartState.Idle
+                        }
+                    }
+                    val serverRunning = adbStatus == AdbServerLauncher.Status.READY ||
                         adbStatus == AdbServerLauncher.Status.LAUNCHING
+                    // Sin Wi-Fi no hay cómo conectar al adbd local; un servidor ya vivo no la necesita.
+                    val fluidNeedsWifi = !shizukuRunning.value && fluidConfigured.value &&
+                        !wifiConnected.value && !serverRunning
+                    val fluidActive = shizukuRunning.value || serverRunning ||
+                        (fluidConfigured.value && !fluidNeedsWifi)
 
                     when {
                         showSettingsScreen -> {
@@ -223,16 +298,20 @@ class MainActivity : ComponentActivity() {
                                         .putFloat("gyro_acceleration", 1.0f)
                                         .apply()
                                 },
+                                fluidConfigured = fluidConfigured.value,
+                                shizukuRunning = shizukuRunning.value,
+                                serviceConnected = serviceConnected,
+                                fluidSetupStep = fluidStep.value,
+                                fluidSetupFailed = fluidSetupState == FluidSetup.State.CONNECT_FAILED,
+                                onConfigureFluid = { startFluidSetup() },
+                                onForgetFluid = { forgetFluid() },
+                                fluidTurnedOff = fluidTurnedOff.value,
+                                onTurnOffFluid = { turnOffFluid() },
                                 onBack = { showSettingsScreen = false }
                             )
                         }
                         showInfoScreen -> {
-                            AboutScreen(
-                                onBack = { showInfoScreen = false },
-                                configured = fluidConfigured.value,
-                                onConfigure = { startFluidSetup() },
-                                onForget = { forgetFluid() }
-                            )
+                            AboutScreen(onBack = { showInfoScreen = false })
                         }
                         else -> {
                             CaptureScreen(
@@ -241,16 +320,33 @@ class MainActivity : ComponentActivity() {
                                 serviceConnected = serviceConnected,
                                 serviceEnabled = accessibilityEnabled.value,
                                 fluidActive = fluidActive,
+                                fluidNeedsWifi = fluidNeedsWifi,
                                 onStartClick = { requestCapture() },
-                                fluidConfigured = fluidConfigured.value,
-                                onConfigureFluid = { startFluidSetup() },
-                                onForgetFluid = { forgetFluid() },
                                 isDarkTheme = isDarkTheme,
                                 onToggleDarkMode = { isDarkTheme = !isDarkTheme },
                                 onOpenSettings = { showSettingsScreen = true },
                                 onOpenInfo = { showInfoScreen = true }
                             )
                         }
+                    }
+
+                    if (fluidSetupState == FluidSetup.State.CHECKING) {
+                        StartingOverlay("Buscando una vinculación anterior…")
+                    }
+                    if (forgettingFluid.value) {
+                        StartingOverlay("Olvidando el emparejamiento…")
+                    }
+                    when (val start = startState.value) {
+                        StartState.Starting -> StartingOverlay("Iniciando el modo fluido…")
+                        is StartState.Failed -> StartFailedDialog(
+                            message = start.message,
+                            onUseNormalMode = {
+                                startState.value = StartState.Idle
+                                launchProjection()
+                            },
+                            onDismiss = { startState.value = StartState.Idle }
+                        )
+                        StartState.Idle -> Unit
                     }
                 }
             }
@@ -262,7 +358,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         accessibilityEnabled.value = isAccessibilityServiceEnabled()
         shizukuRunning.value = Shizuku.pingBinder()
-        fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this)
+        refreshFluidState()
+        FluidSetup.dismiss()
         refreshVoiceState()
     }
 
@@ -296,6 +393,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(viewerStartTimeout)
+        getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(wifiCallback)
         Shizuku.removeBinderReceivedListener(shizukuReceived)
         Shizuku.removeBinderDeadListener(shizukuDead)
         Shizuku.removeRequestPermissionResultListener(shizukuPermissionResult)
@@ -345,18 +444,25 @@ class MainActivity : ComponentActivity() {
      * conectado. Lo llama [ensureServerThenStart] una vez que el servidor entregó su binder.
      */
     private fun startServerViewer(openPackage: String?) {
-        if (ScreenCaptureService.isCapturing) return
+        if (ScreenCaptureService.isCapturing) {
+            startState.value = StartState.Idle
+            return
+        }
         if (!JoystickManager.serviceConnected.value) {
             Log.w(TAG, "servidor: falta el servicio de accesibilidad")
+            startState.value = StartState.Failed("Se detuvo el servicio de accesibilidad de CeluVR, que dibuja el visor. Volvé a activarlo en Ajustes y tocá Iniciar.")
             return
         }
         if (!ServerDisplay.isAvailable()) {
             Log.w(TAG, "servidor: no está conectado; lanzalo con app_process")
+            startState.value = StartState.Failed(fluidStartFailure(AdbServerLauncher.Status.ERROR))
             return
         }
         ContextCompat.startForegroundService(
             this, ScreenCaptureService.startServerIntent(this, openPackage)
         )
+        mainHandler.removeCallbacks(viewerStartTimeout)
+        mainHandler.postDelayed(viewerStartTimeout, VIEWER_START_TIMEOUT_MS)
     }
 
     /**
@@ -393,7 +499,7 @@ class MainActivity : ComponentActivity() {
         when {
             Shizuku.pingBinder() -> startVirtualViewer(null)
             // Solo con el modo fluido ya configurado se intenta por adb; si no, captura normal. Así
-            // INICIAR nunca mete la ventanita de emparejar de prepo: eso es explícito, desde Acerca de.
+            // INICIAR nunca mete la ventanita de emparejar de prepo: eso es explícito, desde Ajustes.
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && AdbServerLauncher.isConfigured(this) ->
                 ensureServerThenStart(null)
             else -> launchProjection()
@@ -405,47 +511,73 @@ class MainActivity : ComponentActivity() {
      * si algo falla, cae a la captura de pantalla de siempre. No muestra el emparejamiento.
      */
     private fun ensureServerThenStart(openPackage: String?) {
+        // Un servidor ya vivo corre en el propio celular y no necesita la red; para conectar uno nuevo
+        // sí hace falta la Wi-Fi, y sin ella los reintentos de conexión solo harían esperar.
+        if (!VDisplayConnection.isAvailable() && !WirelessDebugging.hasWifi(this)) {
+            startState.value = StartState.Failed(
+                "El modo fluido necesita que el celular esté conectado a una red Wi-Fi. Conectate y volvé a tocar Iniciar, o seguí en modo normal."
+            )
+            return
+        }
+        startState.value = StartState.Starting
         AdbServerLauncher.ensureServer(this) { ready ->
             runOnUiThread {
-                if (ready) startServerViewer(openPackage) else launchProjection()
+                if (ready) {
+                    startServerViewer(openPackage)
+                } else {
+                    startState.value = StartState.Failed(fluidStartFailure(AdbServerLauncher.status.value))
+                }
             }
         }
     }
 
+    /** Explica por qué no arrancó el modo fluido, según dónde se cortó la conexión con el adbd local. */
+    private fun fluidStartFailure(status: AdbServerLauncher.Status): String = when {
+        status == AdbServerLauncher.Status.NEEDS_PAIRING ->
+            "El celular ya no reconoce a CeluVR: se quitó la vinculación de la Depuración inalámbrica. Volvé a configurar el modo fluido desde Ajustes, o seguí en modo normal."
+        !WirelessDebugging.hasWifi(this) ->
+            "Se cortó la Wi-Fi mientras se conectaba. El modo fluido necesita una red Wi-Fi: conectate y volvé a tocar Iniciar, o seguí en modo normal."
+        status == AdbServerLauncher.Status.WIRELESS_OFF ->
+            "No se pudo conectar con la Depuración inalámbrica. Verificá que esté activada en Opciones de desarrollador y volvé a intentar, o seguí en modo normal."
+        else ->
+            "Se conectó con la Depuración inalámbrica, pero el servidor del modo fluido no arrancó. Volvé a intentar o seguí en modo normal."
+    }
+
     /**
-     * Setup explícito del modo fluido (botón "Configurar" en Acerca de): muestra la ventanita para
-     * tipear el código de emparejamiento y, al emparejar, conecta y deja el modo fluido configurado.
-     * La ventanita es un overlay del servicio de accesibilidad, que el diálogo de seguridad no oculta.
+     * Setup explícito del modo fluido (botón en Ajustes): lleva al ajuste del paso actual y deja encima
+     * el flotante para tipear el código de vinculación. Al vincular, [FluidSetup] conecta y vuelve acá.
      */
     private fun startFluidSetup() {
         val host = JoystickManager.accessibilityService
         if (host == null) {
-            // La ventanita de emparejar es un overlay del servicio de accesibilidad: sin el servicio no
-            // hay dónde dibujarla, así que primero se manda a activarlo.
+            // El flotante es un overlay del servicio de accesibilidad: sin el servicio no hay dónde
+            // dibujarlo, así que primero se manda a activarlo.
             openAccessibilitySettings()
             return
         }
-        pairingOverlay?.hide()
-        pairingOverlay = PairingOverlay(host).also { overlay ->
-            overlay.show(
-                onPaired = {
-                    runOnUiThread {
-                        pairingOverlay = null
-                        AdbServerLauncher.configure(this) {
-                            runOnUiThread { fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this) }
-                        }
-                    }
-                },
-                onCancel = { runOnUiThread { pairingOverlay = null } }
-            )
+        FluidSetup.start(this, host)
+    }
+
+    /** Olvida el modo fluido (botón en Ajustes): corta la conexión, borra la config y la clave adb. */
+    private fun forgetFluid() {
+        forgettingFluid.value = true
+        AdbServerLauncher.forget(this) {
+            runOnUiThread {
+                forgettingFluid.value = false
+                refreshFluidState()
+            }
         }
     }
 
-    /** Olvida el modo fluido (botón en Acerca de): corta la conexión, borra la config y la clave adb. */
-    private fun forgetFluid() {
-        AdbServerLauncher.forget(this) {
-            runOnUiThread { fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this) }
-        }
+    /** Apaga el modo fluido (botón en Ajustes) conservando el emparejamiento para volver a encenderlo. */
+    private fun turnOffFluid() {
+        AdbServerLauncher.turnOff(this) { runOnUiThread { refreshFluidState() } }
+    }
+
+    private fun refreshFluidState() {
+        fluidConfigured.value = AdbServerLauncher.isFluidAvailable(this)
+        fluidTurnedOff.value = AdbServerLauncher.isTurnedOff(this)
+        fluidStep.value = FluidSetupStep.current(this)
     }
 
     private fun launchProjection() {
@@ -484,6 +616,9 @@ class MainActivity : ComponentActivity() {
         private const val SHIZUKU_REQUEST_CODE = 1
         private const val TAG = "CardboardCapture"
 
+        /** Cuánto se espera a que el visor abra una vez que el servidor del modo fluido está listo. */
+        private const val VIEWER_START_TIMEOUT_MS = 10_000L
+
         /**
          * Trae la pantalla principal al frente en la pantalla física desde cualquier contexto. Con
          * NEW_TASK el sistema usa la tarea de CeluVR si ya existe, y REORDER_TO_FRONT sube esta
@@ -508,6 +643,63 @@ class MainActivity : ComponentActivity() {
 private fun isViewerSupported(): Boolean =
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
+/** Estado del arranque del visor en modo fluido, desde que se toca Iniciar hasta que abre o falla. */
+private sealed interface StartState {
+    data object Idle : StartState
+    data object Starting : StartState
+    data class Failed(val message: String) : StartState
+}
+
+/** Tapa la pantalla con el ícono girando sobre su eje vertical y [text], y no deja tocar nada mientras tanto. */
+@Composable
+private fun StartingOverlay(text: String) {
+    BackHandler {}
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.92f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            // El vector animado corre en el hilo de render: sigue girando aunque el hilo principal se
+            // trabe arrancando el visor, cosa que una animación de Compose no puede.
+            AndroidView(
+                factory = { context ->
+                    ImageView(context).apply {
+                        val logo = context.getDrawable(R.drawable.loader_celuvr_logo) as AnimatedVectorDrawable
+                        setImageDrawable(logo)
+                        logo.start()
+                    }
+                },
+                modifier = Modifier.size(96.dp)
+            )
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun StartFailedDialog(message: String, onUseNormalMode: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("No se pudo iniciar el modo fluido") },
+        text = { Text(message) },
+        confirmButton = {
+            TextButton(onClick = onUseNormalMode) { Text("Usar modo normal") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cerrar") }
+        }
+    )
+}
+
 @Composable
 fun CaptureScreen(
     supported: Boolean,
@@ -516,9 +708,7 @@ fun CaptureScreen(
     serviceEnabled: Boolean,
     fluidActive: Boolean,
     onStartClick: () -> Unit,
-    fluidConfigured: Boolean = false,
-    onConfigureFluid: () -> Unit = {},
-    onForgetFluid: () -> Unit = {},
+    fluidNeedsWifi: Boolean = false,
     isDarkTheme: Boolean = false,
     onToggleDarkMode: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
@@ -598,10 +788,14 @@ fun CaptureScreen(
                 modifier = Modifier.weight(1f)
             )
             StatusChip(
-                label = if (fluidActive) "Modo fluido" else "Modo normal",
+                label = when {
+                    fluidNeedsWifi -> "Fluido sin Wi-Fi"
+                    fluidActive -> "Modo fluido"
+                    else -> "Modo normal"
+                },
                 active = fluidActive,
                 modifier = Modifier.weight(1f),
-                neutralWhenInactive = true
+                neutralWhenInactive = !fluidNeedsWifi
             )
         }
 
@@ -649,12 +843,14 @@ fun CaptureScreen(
                             "El servicio de accesibilidad está activado pero detenido. Apágalo y vuelve a encenderlo en Ajustes."
                         !serviceConnected ->
                             "Falta activar el servicio de accesibilidad \"$serviceLabel\" para dibujar la vista estéreo."
+                        fluidNeedsWifi ->
+                            "El modo fluido está configurado, pero necesita Wi-Fi y el celular no está conectado a ninguna red. Conectate para usarlo, o tocá Iniciar y seguí en modo normal."
                         fluidActive ->
                             "Modo fluido activo: tocá Iniciar y el panel de apps abre directo en el visor, a máxima fluidez."
                         fullScreenRejected ->
                             "Se eligió \"Pantalla completa\" (se ve en negro). Tocá Iniciar, elegí \"Una sola app\" y seleccioná $appName."
                         else ->
-                            "Tocá Iniciar: con el modo fluido configurado el panel abre directo; si no, elegí \"Una sola app\" y seleccioná $appName. El modo fluido (opcional) se activa desde Acerca de."
+                            "Tocá Iniciar: con el modo fluido configurado el panel abre directo; si no, elegí \"Una sola app\" y seleccioná $appName. El modo fluido (opcional) se activa desde Ajustes."
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -728,12 +924,7 @@ fun StatusChip(
 }
 
 @Composable
-fun AboutScreen(
-    onBack: () -> Unit,
-    configured: Boolean = false,
-    onConfigure: () -> Unit = {},
-    onForget: () -> Unit = {}
-) {
+fun AboutScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val violet = MaterialTheme.colorScheme.primary
     Surface(
@@ -838,12 +1029,6 @@ fun AboutScreen(
                     }
                 }
 
-                FluidModeSection(
-                    accent = violet,
-                    configured = configured,
-                    onConfigure = onConfigure,
-                    onForget = onForget
-                )
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -876,98 +1061,167 @@ private fun AboutInfoRow(label: String, accent: Color, value: String) {
 }
 
 /**
- * Sección desplegable que explica y guía el modo fluido (opcional, por depuración inalámbrica). Arranca
- * plegada. Según [configured], muestra los pasos para configurarlo con un botón "Configurar modo fluido",
- * o la confirmación de que ya está configurado con la opción de olvidar el emparejamiento.
+ * Sección de Ajustes que explica y guía el modo fluido (opcional, por depuración inalámbrica o Shizuku).
+ * Si está [configured], muestra la confirmación con las opciones de apagarlo (conserva la vinculación) u
+ * olvidar el emparejamiento; si está [turnedOff], el botón para volver a encenderlo; si no, los pasos
+ * marcando los ya hechos según [setupStep], con un único botón que lleva al ajuste que falta.
  */
 @Composable
-private fun FluidModeSection(
-    accent: Color,
+private fun FluidModeCard(
     configured: Boolean,
+    shizukuRunning: Boolean,
+    serviceConnected: Boolean,
+    setupStep: FluidSetupStep,
+    setupFailed: Boolean,
     onConfigure: () -> Unit,
-    onForget: () -> Unit
+    onForget: () -> Unit,
+    turnedOff: Boolean,
+    onTurnOff: () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    Divider()
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
+    val accent = MaterialTheme.colorScheme.primary
+    val context = LocalContext.current
+    val pairLabel = remember { FluidSetupStep.pairWithCodeLabel(context) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            Icon(
-                painter = painterResource(id = R.drawable.ic_speed),
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = accent
-            )
-            AboutLabel("MODO FLUIDO (OPCIONAL)", accent)
-            Spacer(modifier = Modifier.weight(1f))
-            Icon(
-                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = if (expanded) "Contraer" else "Expandir",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        if (expanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(9.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "Por defecto se ve cualquier app, pero los videos y juegos pueden ir entrecortados. El modo fluido los muestra a máxima velocidad.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_speed),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = accent
                 )
+                Text(
+                    text = "MODO FLUIDO (OPCIONAL)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = accent,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Text(
+                text = "Por defecto se ve cualquier app, pero los videos y juegos pueden ir entrecortados. El modo fluido los muestra a máxima velocidad.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Modo fluido",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = when {
+                            configured -> "Encendido: el panel de apps abre directo en el visor"
+                            turnedOff -> "Apagado. La vinculación sigue guardada: al encenderlo no hace falta otro código"
+                            else -> "Configuralo con los pasos de abajo para poder encenderlo"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = configured,
+                    onCheckedChange = { on -> if (on) onConfigure() else onTurnOff() },
+                    enabled = configured || turnedOff
+                )
+            }
+            if (shizukuRunning) {
+                FluidStatusRow("Activo con Shizuku: mientras Shizuku esté iniciado no hace falta emparejar.", accent)
+            }
+            if (configured || turnedOff) {
                 if (configured) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(accent.copy(alpha = 0.10f))
-                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = accent
-                        )
-                        Text(
-                            text = "Modo fluido configurado. Tocá Iniciar y el panel de apps abre directo en el visor.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
                     Text(
                         text = "Tras reiniciar el celular, CeluVR vuelve a activar la Depuración inalámbrica sola; no hay que repetir el emparejamiento.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    TextButton(
-                        onClick = onForget,
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Olvidar emparejamiento")
-                    }
-                } else {
-                    FluidStep(1, "Activá Opciones de desarrollador: en Ajustes › Acerca del teléfono, tocá 7 veces el número de compilación.", accent)
-                    FluidStep(2, "Activá la Depuración inalámbrica en Opciones de desarrollador.", accent)
-                    FluidStep(3, "Tocá \"Configurar modo fluido\" y escribí el código de vinculación del sistema.", accent)
-                    Button(
-                        onClick = onConfigure,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp)
-                    ) {
-                        Text("Configurar modo fluido")
-                    }
                 }
+                if (turnedOff && !serviceConnected) {
+                    Text(
+                        text = "Para encenderlo hace falta el servicio de accesibilidad de CeluVR: el switch te lleva a activarlo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onForget,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Olvidar emparejamiento")
+                }
+            } else {
+                FluidStep(
+                    1,
+                    "Activá las Opciones de desarrollador: en Acerca del teléfono, tocá 7 veces el número de compilación (en Samsung, dentro de Información de software).",
+                    accent,
+                    done = setupStep != FluidSetupStep.DEVELOPER_OPTIONS
+                )
+                FluidStep(
+                    2,
+                    "Activá la Depuración inalámbrica en Opciones de desarrollador.",
+                    accent,
+                    done = setupStep == FluidSetupStep.PAIR
+                )
+                FluidStep(
+                    3,
+                    "Entrá a Depuración inalámbrica, tocá \"$pairLabel\" y escribí el código en el botón flotante de CeluVR.",
+                    accent,
+                    done = false
+                )
+                if (setupFailed) {
+                    Text(
+                        text = "Se vinculó, pero no se pudo conectar. Verificá que la Depuración inalámbrica siga activa y probá de nuevo.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                if (!serviceConnected) {
+                    Text(
+                        text = "El botón flotante necesita el servicio de accesibilidad de CeluVR: activalo primero.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Button(
+                    onClick = onConfigure,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                ) {
+                    Text(
+                        when {
+                            !serviceConnected -> "Activar accesibilidad"
+                            setupStep == FluidSetupStep.DEVELOPER_OPTIONS -> "Ir a Acerca del teléfono"
+                            else -> "Ir a Depuración inalámbrica"
+                        }
+                    )
+                }
+                if (serviceConnected) {
+                    Text(
+                        text = "En los ajustes aparece el ícono de CeluVR flotando: tocalo para escribir el código. Lo podés arrastrar para que no tape nada.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (!shizukuRunning) {
                 Text(
                     text = "Alternativa: con la app Shizuku iniciada, el modo fluido funciona sin este emparejamiento.",
                     style = MaterialTheme.typography.bodySmall,
@@ -979,7 +1233,27 @@ private fun FluidModeSection(
 }
 
 @Composable
-private fun FluidStep(number: Int, text: String, accent: Color) {
+private fun FluidStatusRow(text: String, accent: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(accent.copy(alpha = 0.10f))
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.CheckCircle,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = accent
+        )
+        Text(text = text, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun FluidStep(number: Int, text: String, accent: Color, done: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -991,16 +1265,26 @@ private fun FluidStep(number: Int, text: String, accent: Color) {
                 .background(accent),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = number.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimary,
-                fontWeight = FontWeight.Bold
-            )
+            if (done) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Hecho",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            } else {
+                Text(
+                    text = number.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
+            color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified,
             modifier = Modifier.weight(1f)
         )
     }
@@ -1063,6 +1347,15 @@ fun SettingsScreen(
     onVoiceEnabledChange: (Boolean) -> Unit,
     onOpenAppPermissions: () -> Unit,
     onResetToDefaults: () -> Unit,
+    fluidConfigured: Boolean,
+    shizukuRunning: Boolean,
+    serviceConnected: Boolean,
+    fluidSetupStep: FluidSetupStep,
+    fluidSetupFailed: Boolean,
+    onConfigureFluid: () -> Unit,
+    onForgetFluid: () -> Unit,
+    fluidTurnedOff: Boolean,
+    onTurnOffFluid: () -> Unit,
     onBack: () -> Unit
 ) {
     var showResetConfirmDialog by remember { mutableStateOf(false) }
@@ -1291,6 +1584,18 @@ fun SettingsScreen(
                     }
                 }
 
+                FluidModeCard(
+                    configured = fluidConfigured,
+                    shizukuRunning = shizukuRunning,
+                    serviceConnected = serviceConnected,
+                    setupStep = fluidSetupStep,
+                    setupFailed = fluidSetupFailed,
+                    onConfigure = onConfigureFluid,
+                    onForget = onForgetFluid,
+                    turnedOff = fluidTurnedOff,
+                    onTurnOff = onTurnOffFluid
+                )
+
                 // Reset Button
                 OutlinedButton(
                     onClick = { showResetConfirmDialog = true },
@@ -1347,6 +1652,15 @@ fun SettingsScreenPreview() {
             onVoiceEnabledChange = {},
             onOpenAppPermissions = {},
             onResetToDefaults = {},
+            fluidConfigured = false,
+            shizukuRunning = false,
+            serviceConnected = true,
+            fluidSetupStep = FluidSetupStep.WIRELESS_DEBUGGING,
+            fluidSetupFailed = false,
+            onConfigureFluid = {},
+            onForgetFluid = {},
+            fluidTurnedOff = false,
+            onTurnOffFluid = {},
             onBack = {}
         )
     }

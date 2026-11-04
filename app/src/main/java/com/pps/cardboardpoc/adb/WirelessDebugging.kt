@@ -2,6 +2,9 @@ package com.pps.cardboardpoc.adb
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 
@@ -24,6 +27,22 @@ object WirelessDebugging {
 
     fun isEnabled(context: Context): Boolean =
         Settings.Global.getInt(context.contentResolver, SETTING, 0) == 1
+
+    /** URI del ajuste, para observar cuándo el usuario la enciende o la apaga. */
+    val settingUri: Uri get() = Settings.Global.getUriFor(SETTING)
+
+    /**
+     * Si el celular está conectado a alguna red Wi-Fi, sin la cual la depuración inalámbrica no arranca.
+     * Mira todas las redes y no solo la activa: una Wi-Fi sin internet sigue sirviendo aunque el sistema
+     * use los datos móviles por defecto.
+     */
+    @Suppress("DEPRECATION")
+    fun hasWifi(context: Context): Boolean {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        return connectivity.allNetworks.any {
+            connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }
 
     /** Enciende la depuración inalámbrica si CeluVR tiene el permiso. Devuelve si quedó encendida. */
     fun enable(context: Context): Boolean {
