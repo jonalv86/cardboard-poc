@@ -513,8 +513,7 @@ object JoystickManager {
             val pushing = isPushingEdge(edge)
             accessibilityService?.setEdgeScrollPushing(pushing)
 
-            val existing = current
-            if (existing == null || existing.dirX != edge.dirX || existing.dirY != edge.dirY) {
+            if (current == null || current.dirX != edge.dirX || current.dirY != edge.dirY) {
                 edgeContact = EdgeContact(edge.dirX, edge.dirY, now - EDGE_DWELL_MS)
                 Log.d(TAG, "Arrastre contra el borde (${edge.dirX}, ${edge.dirY}), pushing=$pushing")
                 accessibilityService?.startEdgeScroll(edge.dirX, edge.dirY)

@@ -89,7 +89,7 @@ class EdgeScroller(service: AccessibilityService) {
         if (!active || finger.isDown) return
         val width = JoystickManager.screenWidth.toFloat()
         val height = JoystickManager.screenHeight.toFloat()
-        if (width == 0f || height == 0f) return
+        if ((width == 0f) || (height == 0f)) return
 
         if (dirY != 0) {
             fromX = JoystickManager.cursorX.coerceIn(width * CROSS_MARGIN, width * (1 - CROSS_MARGIN))
@@ -117,7 +117,7 @@ class EdgeScroller(service: AccessibilityService) {
             // hace que a veces cancele el gesto nuevo; una pausa corta lo evita, como con un dedo real.
             // Si igual se cancela, se reintenta mientras el avance siga activo.
             onUp = { if (active) handler.postDelayed(nextSwipe, REGRAB_DELAY_MS) },
-            firstTo = pointAt(progress)
+            firstTo = pointAt(progress),
         )
     }
 
