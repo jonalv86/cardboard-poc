@@ -378,6 +378,7 @@ object JoystickManager {
             when (ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)) {
                 ControlBar.Button.HOME -> showPanel()
                 ControlBar.Button.PORTRAIT -> togglePortrait()
+                ControlBar.Button.SCROLL_TOP -> scrollToTop()
                 null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
             }
             return
@@ -481,6 +482,17 @@ object JoystickManager {
         val portrait = !ScreenCaptureService.portrait.value
         Log.d(TAG, "Vertical: $portrait")
         service.startService(ScreenCaptureService.portraitIntent(service, portrait))
+    }
+
+    /**
+     * Desplaza el contenido de la pantalla actual al principio (tope).
+     */
+    fun scrollToTop() {
+        if (PanelActivity.isInFront) {
+            PanelActivity.scrollToTop()
+        } else {
+            accessibilityService?.scrollToTop()
+        }
     }
 
     /**

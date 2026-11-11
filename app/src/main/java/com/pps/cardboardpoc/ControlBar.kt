@@ -18,24 +18,32 @@ object ControlBar {
         HOME,
 
         /** Pasa la app a vertical, o la devuelve a horizontal. */
-        PORTRAIT
+        PORTRAIT,
+
+        /** Va al principio del contenido / tope de la página o panel. */
+        SCROLL_TOP
     }
 
     /**
      * Botones de la barra, de izquierda a derecha. Vertical solo aparece con la pantalla virtual, la
      * única que se puede poner en vertical, y fuera del panel, que siempre se ve en horizontal.
+     * Mientras el panel de apps está abierto, el botón de menú (HOME) se oculta. El botón "Ir arriba"
+     * (SCROLL_TOP) siempre está disponible.
      */
     val buttons: List<Button>
-        get() = if (JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY &&
-            !PanelActivity.isInFront
-        ) {
-            WITH_PORTRAIT
-        } else {
-            HOME_ONLY
+        get() {
+            val isVirtual = JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY
+            val panelOpen = PanelActivity.isInFront
+            val list = mutableListOf<Button>()
+            if (!panelOpen) {
+                list.add(Button.HOME)
+            }
+            if (isVirtual && !panelOpen) {
+                list.add(Button.PORTRAIT)
+            }
+            list.add(Button.SCROLL_TOP)
+            return list
         }
-
-    private val HOME_ONLY = listOf(Button.HOME)
-    private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT)
 
     /** Diámetro de cada botón. */
     const val BUTTON_DIAMETER_PX = 112f

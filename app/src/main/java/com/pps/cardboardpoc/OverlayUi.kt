@@ -303,6 +303,7 @@ class OverlayUi(private val context: Context) {
         val resId = when (button) {
             ControlBar.Button.HOME -> R.drawable.ic_apps_rounded
             ControlBar.Button.PORTRAIT -> R.drawable.ic_screen_rotation
+            ControlBar.Button.SCROLL_TOP -> R.drawable.ic_vertical_align_top
         }
         val drawable = context.getDrawable(resId) ?: return 0
         val bitmap = Bitmap.createBitmap(ICON_TEXTURE_PX, ICON_TEXTURE_PX, Bitmap.Config.ARGB_8888)
