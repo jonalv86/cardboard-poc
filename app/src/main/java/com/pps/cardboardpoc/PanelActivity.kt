@@ -99,6 +99,11 @@ class PanelActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        JoystickManager.panelInFront = false
+    }
+
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) pendingLaunch = null
@@ -116,6 +121,7 @@ class PanelActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        JoystickManager.panelInFront = true
         if (ScreenCaptureService.portrait.value) {
             startService(ScreenCaptureService.portraitIntent(this, false))
         }

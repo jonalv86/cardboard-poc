@@ -20,10 +20,10 @@ class FrontAppDetector(
 ) {
 
     /**
-     * App al frente de la pantalla virtual. [packageName] es null sobre el panel o sin ventana de app.
-     * [fit] es cómo encaja su ventana en la pantalla.
+     * App al frente de la pantalla virtual. [packageName] es null sobre el panel o sin ventana de app;
+     * [panel] dice si lo que está al frente es el panel. [fit] es cómo encaja su ventana en la pantalla.
      */
-    data class FrontApp(val packageName: String?, val fit: WindowFit)
+    data class FrontApp(val packageName: String?, val fit: WindowFit, val panel: Boolean = false)
 
     private val bounds = Rect()
 
@@ -60,7 +60,7 @@ class FrontAppDetector(
     private fun frontApp(): FrontApp {
         val window = frontAppWindow() ?: return NONE
         val packageName = window.root?.packageName?.toString() ?: return NONE
-        if (packageName == service.packageName) return NONE
+        if (packageName == service.packageName) return PANEL
 
         window.getBoundsInScreen(bounds)
         val fit = WindowFit.of(
@@ -84,6 +84,7 @@ class FrontAppDetector(
 
     private companion object {
         val NONE = FrontApp(null, WindowFit.PARTIAL)
+        val PANEL = FrontApp(null, WindowFit.PARTIAL, panel = true)
 
         /** Cada cuánto se mira la app al frente. */
         const val CHECK_INTERVAL_MS = 300L

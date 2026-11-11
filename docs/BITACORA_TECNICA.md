@@ -27,6 +27,7 @@
 - [Modo fluido guiado desde Ajustes](#modo-fluido-guiado)
 - [Zoom de la pantalla](#zoom)
 - [Disney+, Max y Flow en el visor](#disney-max-flow)
+- [Barra y bordes: "Ir arriba" y arrastre que acelera](#ir-arriba)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -1891,6 +1892,77 @@ Con el visor puesto se vio Disney+, la interfaz y el video.
 
 ---
 
+<a id="ir-arriba"></a>
+## Barra y bordes: "Ir arriba" y arrastre que acelera
+
+Issues #26 y #31, PR #49. **Fecha:** 11 de noviembre de 2026. **Equipo de prueba:** el mismo Samsung
+(SM-S938B, Android 16).
+
+El PR #49 traía dos issues: un arrastre que acelera al empujar contra el borde (#26) y un botón "Ir
+arriba" en la barra, que además oculta Inicio cuando el panel está abierto (#31). Al mergearlo con la
+rama del #48 se vio que el #31 no estaba y que el panel había vuelto atrás en tres cosas.
+
+### Qué se perdió y por qué
+
+El botón del #31 se había hecho en un commit de la rama del PR. Después esa rama trajo los cambios de
+master, y al resolver los conflictos quedó la versión de master de la barra, de `JoystickManager` y de
+`OverlayUi`: el botón, su acción y el ícono desaparecieron, y quedaron dos `scrollToTop()` que nadie
+llamaba. El ícono `ic_vertical_align_top` tampoco había llegado a ningún commit.
+
+El mismo PR reemplazó `PanelActivity` por una versión anterior. Se perdieron tres cosas, que se
+restauraron:
+
+- **La multiventana del #35.** Las apps volvían a abrirse dentro de la tarea del panel, a pantalla
+  completa con su propio tamaño: Disney+ se veía como una columna angosta en el medio.
+- **Las recientes de la sesión.** Volvía `RecentAppsProvider`, que pide el permiso de estadísticas de
+  uso, el que en el #44 se vio que no se puede otorgar.
+- **La lista única.** RECIENTES volvía a ser una grilla fija arriba, tan baja que cortaba el nombre de la
+  app.
+
+### "Ir arriba" (#31)
+
+La barra suma el botón **Ir arriba** (`ControlBar.Button.SCROLL_TOP`), con una flecha que sube hasta una
+barra, dibujada para el proyecto. El orden queda Inicio, Ir arriba, Vertical y Zoom; con el panel al
+frente, Ir arriba y Zoom.
+
+- **En el panel** lleva la lista al tope (`scrollToItem(0)`).
+- **En otra app** busca la lista desplazable de mayor área en la ventana activa y la hace retroceder de a
+  una página (`ACTION_SCROLL_BACKWARD`) mientras la lista diga que puede subir, hasta 25 páginas para que
+  un feed infinito no lo trabe. Corre en otro hilo, para no frenar el cursor. La primera versión mandaba
+  los pedidos seguidos y subía poco más de una página: cada pedido arranca una animación que corta la
+  anterior. Ahora espera 250 ms entre página y página.
+
+Para ocultar Inicio hace falta saber si el panel está al frente, y la forma vieja (`isInFront`, que seguía
+la pausa del panel) fallaba con las apps en multiventana (ver "Disney+, Max y Flow en el visor"). Ahora
+`JoystickManager.panelInFront` lo actualizan en el acto la reanudación y la pausa del panel, y en la
+pantalla virtual lo corrige el detector de la app al frente por el orden de las ventanas.
+
+### Arrastre que acelera contra el borde (#26)
+
+Esto sí llegó con el PR. Con el gatillo apretado sobre un borde, el avance arranca enseguida, acelera
+mientras se empuja contra el borde con el stick o con la cabeza, y frena de a poco al dejar de empujar.
+Falta un criterio del issue: no hay ningún estado visual en la retícula mientras acelera o frena.
+
+### Cómo se probó
+
+Por USB, con el visor andando. La barra se miró en capturas de la pantalla física, y "Ir arriba", en
+capturas de la pantalla virtual antes y después de tocarlo.
+
+- Con el panel al frente, la barra muestra Ir arriba y Zoom; con una app, los cuatro botones.
+- En el panel, con la lista desplazada hasta la "C", "Ir arriba" la vuelve al principio.
+- En Ajustes del sistema, desde el final de la lista vuelve al principio en 4 páginas y frena solo.
+- Con la multiventana restaurada, Disney+ ocupa toda la pantalla, se prenden los clones y el gatillo
+  pausa el reproductor.
+
+### Limitaciones conocidas
+
+- **No se probó con el control real**, ni en Chrome, Instagram o YouTube. En Chrome las acciones de
+  accesibilidad pueden devolver que funcionaron sin hacer nada (ver "Fase 3").
+- **El arrastre que acelera (#26) no se probó**: por adb no se puede mantener el gatillo apretado.
+- **Falta el estado visual del #26** en la retícula.
+
+---
+
 <a id="diagnostico"></a>
 ## Cómo diagnosticamos
 
@@ -2073,8 +2145,13 @@ libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` 
       iniciar y suavizado en Ajustes, también con las apps con DRM (ver "Zoom de la pantalla").
 - [x] **Disney+, Max y Flow en el visor** (issue #48): se ven, y el gatillo toca el reproductor de Disney+
       a través de los clones (ver "Disney+, Max y Flow en el visor").
+- [x] **"Ir arriba" en la barra e Inicio oculto con el panel al frente** (issue #31), y **arrastre que
+      acelera contra el borde** (issue #26), salvo su estado visual en la retícula.
 
 **Lo que sigue ahora:**
+
+- [ ] Mostrar en la retícula cuándo el arrastre contra el borde acelera o frena (lo que falta del #26).
+- [ ] Probar con el control "Ir arriba" en Chrome, Instagram y YouTube, y el arrastre que acelera.
 
 - [ ] Probar los comandos de voz en un celular con Android 13 o anterior.
 

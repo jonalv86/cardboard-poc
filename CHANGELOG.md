@@ -8,6 +8,17 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
 
 ## [Sin publicar]
 
+### Agregado
+
+- **Botón "Ir arriba" en la barra del visor** (issue #31): lleva al principio del contenido. En el panel,
+  al tope de la lista de apps; en las demás apps, al principio de su lista principal.
+- **Arrastre que acelera contra el borde** (issue #26): con el gatillo apretado, seguir empujando contra
+  un borde continúa el arrastre y lo va acelerando; al dejar de empujar frena de a poco.
+
+### Cambiado
+
+- Con el panel de apps al frente, la barra ya no muestra el botón Inicio.
+
 ## [1.2.0] — 2026-11-11
 
 ### Agregado

@@ -295,6 +295,7 @@ class ScreenCaptureService : Service() {
         val orientation = FrontAppOrientation()
         frontAppDetector = FrontAppDetector(host, mainHandler) { front ->
             JoystickManager.virtualFrontApp = front.packageName
+            JoystickManager.panelInFront = front.panel
             // Al volver a una app el sistema puede abrir su tarea con el último tamaño de ventana que
             // tuvo, en vez del de la pantalla.
             if (front.packageName != lastFrontApp) {
@@ -662,6 +663,7 @@ class ScreenCaptureService : Service() {
         if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
         lastFrontApp = null
         JoystickManager.virtualFrontApp = null
+        JoystickManager.panelInFront = false
         mirrorActive = false
         mirrorUnavailable = false
         virtualMode = false

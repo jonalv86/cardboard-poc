@@ -46,6 +46,14 @@ object JoystickManager {
     @Volatile
     var virtualFrontApp: String? = null
 
+    /**
+     * Si el panel de apps es lo que está al frente. Lo actualizan en el acto la reanudación y la pausa
+     * del panel; en la pantalla virtual, además, [FrontAppDetector] lo corrige por el orden de las
+     * ventanas, porque las apps en multiventana tapan al panel sin pausarlo.
+     */
+    @Volatile
+    var panelInFront = false
+
     /** Pantalla donde caen los toques y donde se abre el panel: la física, o la virtual del visor. */
     @Volatile
     var targetDisplayId = Display.DEFAULT_DISPLAY
@@ -599,6 +607,7 @@ object JoystickManager {
         ) {
             when (ControlBar.buttonAt(barX, barY, bar.width, bar.height)) {
                 ControlBar.Button.HOME -> showPanel()
+                ControlBar.Button.SCROLL_TOP -> scrollToTop()
                 ControlBar.Button.PORTRAIT -> togglePortrait()
                 ControlBar.Button.ZOOM -> setZoom(ZoomLevels.next(zoomLevel))
                 null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
@@ -693,6 +702,16 @@ object JoystickManager {
         val service = accessibilityService ?: return
         Log.d(TAG, "Inicio: vuelve al panel")
         PanelActivity.show(service)
+    }
+
+    /**
+     * Lleva al principio del contenido: el panel a su tope, o la lista principal de la app al frente.
+     * Fuera de la captura no hace nada.
+     */
+    fun scrollToTop() {
+        if (!ScreenCaptureService.isCapturing) return
+        Log.d(TAG, "Ir arriba: ${if (panelInFront) "panel" else "app al frente"}")
+        if (panelInFront) PanelActivity.scrollToTop() else accessibilityService?.scrollToTop()
     }
 
     /**
