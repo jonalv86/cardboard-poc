@@ -53,6 +53,9 @@ object JoystickManager {
     /** Desplazamiento vertical que aporta la cabeza, en píxeles; 0 sin giroscopio. */
     private var headOffsetY = 0f
 
+    private var lastHeadOffsetX = 0f
+    private var lastHeadOffsetY = 0f
+
     /** Cursor y parte de la pantalla que se ve en el visor, tomados en el mismo instante. */
     class Snapshot(
         /** Posición horizontal del cursor, en píxeles de pantalla. */
@@ -285,6 +288,8 @@ object JoystickManager {
     fun setHeadOffset(dx: Float, dy: Float, zoomChange: Int) {
         synchronized(this) {
             if (zoomChange != zoomChangeCount) return
+            lastHeadOffsetX = headOffsetX
+            lastHeadOffsetY = headOffsetY
             headOffsetX = dx
             headOffsetY = dy
             updateCursor()
@@ -445,6 +450,7 @@ object JoystickManager {
         stickX = if (Math.abs(axisX) > DEAD_ZONE) axisX else 0f
         stickY = if (Math.abs(axisY) > DEAD_ZONE) axisY else 0f
         updateMovement()
+        refreshEdgeContact()
     }
 
     /** Registra que una flecha del D-pad se apretó o se soltó. El cursor se mueve mientras siga apretada. */
@@ -456,6 +462,7 @@ object JoystickManager {
             KeyEvent.KEYCODE_DPAD_DOWN -> dpadDown = pressed
         }
         updateMovement()
+        refreshEdgeContact()
     }
 
     /**
@@ -475,11 +482,11 @@ object JoystickManager {
     /**
      * Vuelve a evaluar si el cursor está sobre un borde, según [EdgeZone]. Si se queda ahí
      * [EDGE_DWELL_MS], la pantalla avanza hacia ese lado hasta que el cursor deja el borde. Con el
-     * gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura tampoco:
+     * gatillo apretado avanza inmediatamente al empujar y acelera/desacelera suavemente. Sin captura tampoco:
      * no hay pantalla estéreo que mirar.
      */
     fun refreshEdgeContact() {
-        val enabled = !pressing && ScreenCaptureService.isCapturing &&
+        val enabled = ScreenCaptureService.isCapturing &&
             screenWidth != 0 && screenHeight != 0
         val current = edgeContact
         val edge = if (enabled) {
@@ -490,6 +497,35 @@ object JoystickManager {
         } else {
             EdgeZone.NONE
         }
+
+        if (edge.isNone) {
+            if (current != null) {
+                handler.removeCallbacks(startEdgeScroll)
+                accessibilityService?.stopEdgeScroll()
+                edgeContact = null
+                Log.d(TAG, "Cursor fuera del borde")
+            }
+            return
+        }
+
+        val now = SystemClock.uptimeMillis()
+        if (pressing) {
+            val pushing = isPushingEdge(edge)
+            accessibilityService?.setEdgeScrollPushing(pushing)
+
+            val existing = current
+            if (existing == null || existing.dirX != edge.dirX || existing.dirY != edge.dirY) {
+                edgeContact = EdgeContact(edge.dirX, edge.dirY, now - EDGE_DWELL_MS)
+                Log.d(TAG, "Arrastre contra el borde (${edge.dirX}, ${edge.dirY}), pushing=$pushing")
+                accessibilityService?.startEdgeScroll(edge.dirX, edge.dirY)
+            } else {
+                if (pushing) {
+                    accessibilityService?.startEdgeScroll(edge.dirX, edge.dirY)
+                }
+            }
+            return
+        }
+
         if (current != null && current.dirX == edge.dirX && current.dirY == edge.dirY) return
         if (current == null && edge.isNone) return
 
@@ -500,9 +536,19 @@ object JoystickManager {
             Log.d(TAG, "Cursor fuera del borde")
             return
         }
-        edgeContact = EdgeContact(edge.dirX, edge.dirY, SystemClock.uptimeMillis())
+        edgeContact = EdgeContact(edge.dirX, edge.dirY, now)
         Log.d(TAG, "Cursor en el borde (${edge.dirX}, ${edge.dirY})")
         handler.postDelayed(startEdgeScroll, EDGE_DWELL_MS)
+    }
+
+    private fun isPushingEdge(edge: EdgeZone.Edge): Boolean {
+        val dx = directionX()
+        val dy = directionY()
+        val pushingX = edge.dirX != 0 && dx * edge.dirX > 0f
+        val pushingY = edge.dirY != 0 && dy * edge.dirY > 0f
+        val pushingHeadX = edge.dirX != 0 && (headOffsetX - lastHeadOffsetX) * edge.dirX > 0f
+        val pushingHeadY = edge.dirY != 0 && (headOffsetY - lastHeadOffsetY) * edge.dirY > 0f
+        return pushingX || pushingY || pushingHeadX || pushingHeadY
     }
 
     private fun directionX(): Float =

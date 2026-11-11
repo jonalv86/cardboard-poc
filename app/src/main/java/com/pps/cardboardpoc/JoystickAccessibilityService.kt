@@ -275,6 +275,11 @@ class JoystickAccessibilityService : AccessibilityService() {
         edgeScroller.start(dirX, dirY)
     }
 
+    /** Actualiza si se está empujando contra el borde para acelerar o desacelerar el avance. */
+    fun setEdgeScrollPushing(pushing: Boolean) {
+        edgeScroller.setPushing(pushing)
+    }
+
     /** Detiene el avance arrancado con [startEdgeScroll]. */
     fun stopEdgeScroll() {
         edgeScroller.stop()
