@@ -1,5 +1,6 @@
 package com.pps.cardboardpoc
 
+import android.graphics.PointF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -37,9 +38,23 @@ object JoystickManager {
     var screenHeight = 0
         private set
 
+    /**
+     * Paquete de la app al frente de la pantalla virtual del visor, o null sobre el panel, sin app a la
+     * vista o con la proyección. Lo actualiza [FrontAppDetector] en cada revisión.
+     */
+    @Volatile
+    var virtualFrontApp: String? = null
+
     /** Pantalla donde caen los toques y donde se abre el panel: la física, o la virtual del visor. */
     @Volatile
     var targetDisplayId = Display.DEFAULT_DISPLAY
+
+    /**
+     * Mientras los clones muestran la pantalla virtual, pasa un punto de ella al lugar de la pantalla
+     * física donde lo muestra un clon; null sin clones. Lo fija [StereoOverlay] al mostrarlos y quitarlos.
+     */
+    @Volatile
+    var mirroredPoint: ((x: Float, y: Float) -> PointF?)? = null
 
     /** Posición horizontal que aporta el joystick, en píxeles de pantalla. */
     private var baseX = 0f

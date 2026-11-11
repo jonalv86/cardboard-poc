@@ -60,6 +60,13 @@ class JoystickAccessibilityService : AccessibilityService() {
         const val EXTRA_DEBUG_CURSOR_X = "x"
         const val EXTRA_DEBUG_CURSOR_Y = "y"
         const val EXTRA_DEBUG_CURSOR_CLICK = "tocar"
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: con [EXTRA_DEBUG_CLONES_FORCE] en
+         * true los clones se prenden con cualquier app al frente; en false vuelven a depender de la app.
+         */
+        const val ACTION_DEBUG_CLONES = "com.pps.cardboardpoc.debug.CLONES"
+        const val EXTRA_DEBUG_CLONES_FORCE = "forzar"
     }
 
     private val pressFinger = VirtualFinger(this, "gatillo")
@@ -116,6 +123,14 @@ class JoystickAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val debugClonesReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            ScreenCaptureService.debugMirrorForced =
+                intent.getBooleanExtra(EXTRA_DEBUG_CLONES_FORCE, false)
+            Log.d(TAG, "Clones por adb: forzados=${ScreenCaptureService.debugMirrorForced}")
+        }
+    }
+
     /**
      * Vincula el servicio activo al JoystickManager al momento de la conexión para permitir
      * el despacho de comandos de entrada.
@@ -137,6 +152,10 @@ class JoystickAccessibilityService : AccessibilityService() {
             )
             ContextCompat.registerReceiver(
                 this, debugCursorReceiver, IntentFilter(ACTION_DEBUG_CURSOR),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            ContextCompat.registerReceiver(
+                this, debugClonesReceiver, IntentFilter(ACTION_DEBUG_CLONES),
                 ContextCompat.RECEIVER_EXPORTED
             )
         }
@@ -180,6 +199,7 @@ class JoystickAccessibilityService : AccessibilityService() {
             unregisterReceiver(debugEdgeScrollReceiver)
             unregisterReceiver(debugZoomReceiver)
             unregisterReceiver(debugCursorReceiver)
+            unregisterReceiver(debugClonesReceiver)
         }
         if (ScreenCaptureService.isCapturing) {
             startService(ScreenCaptureService.stopIntent(this))

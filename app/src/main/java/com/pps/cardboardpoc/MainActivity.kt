@@ -943,6 +943,11 @@ fun StatusChip(
 fun AboutScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val violet = MaterialTheme.colorScheme.primary
+    val context = LocalContext.current
+    val versionName = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull()
+    }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -993,7 +998,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Versión 1.1",
+                        text = "Versión ${versionName.orEmpty()}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = violet,
                         fontWeight = FontWeight.SemiBold

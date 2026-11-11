@@ -156,9 +156,10 @@ por qué y ofrece seguir en modo normal.
 
 En modo fluido, además:
 
-- **Netflix y otras apps con DRM** muestran el video: el visor usa una copia de la pantalla que compone el
-  sistema. Esa vista no tiene corrección de lente: a través del visor, la imagen se ve algo deformada hacia
-  los bordes.
+- **Netflix, Disney+, Max, Flow y otras apps con DRM** muestran el video: el visor usa una copia de la
+  pantalla que compone el sistema. Esa vista no tiene corrección de lente: a través del visor, la imagen se
+  ve algo deformada hacia los bordes. Los toques se hacen sobre esa copia, y sin zoom son algo menos
+  precisos.
 - El botón **Vertical** de la barra del visor pasa la app a vertical y la devuelve a horizontal. Las apps
   que solo funcionan en vertical igual llenan la pantalla horizontal.
 
@@ -205,7 +206,6 @@ sensor lee bien.
   sistema operativo, no un error nuestro. En modo fluido se ven, pero sin corrección de lente.
 - **El botón Vertical solo existe en modo fluido.** En modo normal la orientación la fija la pantalla del
   celular.
-- **Con Disney+ el zoom no funciona.** Con Netflix y las otras apps con DRM sí.
 - **El resaltado del setup del modo fluido usa los textos de Ajustes de AOSP y One UI.** En celulares de
   otras marcas puede no encontrar la opción a tocar; el teclado del código funciona igual.
 - **La corrección de las lentes es aproximada.** Se usan los valores del Cardboard original de

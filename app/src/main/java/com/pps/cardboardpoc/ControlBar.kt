@@ -1,6 +1,5 @@
 package com.pps.cardboardpoc
 
-import android.view.Display
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -26,17 +25,11 @@ object ControlBar {
     }
 
     /**
-     * Botones de la barra, de izquierda a derecha. Vertical solo aparece con la pantalla virtual, la
-     * única que se puede poner en vertical, y fuera del panel, que siempre se ve en horizontal.
+     * Botones de la barra, de izquierda a derecha. Vertical solo aparece con una app al frente de la
+     * pantalla virtual, la única que se puede poner en vertical: el panel siempre se ve en horizontal.
      */
     val buttons: List<Button>
-        get() = if (JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY &&
-            !PanelActivity.isInFront
-        ) {
-            WITH_PORTRAIT
-        } else {
-            HOME_ONLY
-        }
+        get() = if (JoystickManager.virtualFrontApp != null) WITH_PORTRAIT else HOME_ONLY
 
     private val HOME_ONLY = listOf(Button.HOME, Button.ZOOM)
     private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT, Button.ZOOM)

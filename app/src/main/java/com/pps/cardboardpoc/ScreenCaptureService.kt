@@ -294,6 +294,7 @@ class ScreenCaptureService : Service() {
         registerDisplayListener()
         val orientation = FrontAppOrientation()
         frontAppDetector = FrontAppDetector(host, mainHandler) { front ->
+            JoystickManager.virtualFrontApp = front.packageName
             // Al volver a una app el sistema puede abrir su tarea con el último tamaño de ventana que
             // tuvo, en vez del de la pantalla.
             if (front.packageName != lastFrontApp) {
@@ -301,7 +302,7 @@ class ScreenCaptureService : Service() {
                 if (front.packageName != null) fitTasks()
             }
             setPortrait(orientation.portrait(portraitState.value, front.packageName, front.fit))
-            updateMirror(front.packageName?.let(StreamingApps::usesDrm) == true)
+            updateMirror(debugMirrorForced || front.packageName?.let(StreamingApps::usesDrm) == true)
         }.also { it.start() }
         PanelActivity.show(host, openPackage)
     }
@@ -380,6 +381,7 @@ class ScreenCaptureService : Service() {
         if (enabled == mirrorActive) return
         val window = overlay ?: return
         if (!enabled) {
+            Log.d(TAG, "clones: apagados")
             mirrorActive = false
             window.hideMirrors()
             captureThread?.let { Handler(it.looper).post(showHeldImage) }
@@ -400,6 +402,7 @@ class ScreenCaptureService : Service() {
             return
         }
         mirrorActive = window.showMirrors(clones[0], clones[1], captureWidth, captureHeight)
+        Log.d(TAG, "clones: ${if (mirrorActive) "prendidos" else "la ventana no los pudo mostrar"}")
     }
 
     private fun isOwnTaskVisible(): Boolean {
@@ -658,6 +661,7 @@ class ScreenCaptureService : Service() {
         frontAppDetector = null
         if (detector != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) detector.stop()
         lastFrontApp = null
+        JoystickManager.virtualFrontApp = null
         mirrorActive = false
         mirrorUnavailable = false
         virtualMode = false
@@ -898,6 +902,13 @@ class ScreenCaptureService : Service() {
                 action = ACTION_START_SERVER
                 putExtra(EXTRA_OPEN_PACKAGE, openPackage)
             }
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: con true, los clones se prenden con
+         * cualquier app al frente, esté o no en [StreamingApps].
+         */
+        @Volatile
+        var debugMirrorForced = false
 
         private val portraitState = MutableStateFlow(false)
 

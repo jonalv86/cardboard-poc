@@ -90,11 +90,6 @@ class PanelActivity : ComponentActivity() {
         }
     }
 
-    override fun onPause() {
-        super.onPause()
-        isInFront = false
-    }
-
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) pendingLaunch = null
@@ -107,7 +102,6 @@ class PanelActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        isInFront = true
         if (ScreenCaptureService.portrait.value) {
             startService(ScreenCaptureService.portraitIntent(this, false))
         }
@@ -213,10 +207,6 @@ class PanelActivity : ComponentActivity() {
         private var pendingLaunch: PendingLaunch? = null
         private const val SELF_CLOSE_WINDOW_MS = 1500L
         private const val CAPTURE_CHECK_DELAY_MS = 500L
-
-        @Volatile
-        var isInFront = false
-            private set
 
         private const val EXTRA_OPEN_PACKAGE = "open_package"
 

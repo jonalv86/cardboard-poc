@@ -8,6 +8,8 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
 
 ## [Sin publicar]
 
+## [1.2.0] — 2026-11-11
+
 ### Agregado
 
 - **Zoom de la pantalla en el visor** (issue #36): un botón con una lupa en la barra pasa de 1× a 1,5×, a
@@ -24,8 +26,8 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   micrófono; si se niega, queda apagado y avisa, con un botón a los permisos de la app.
 - **Pantalla de Ajustes**, desde el engranaje de la pantalla principal: giroscopio (activarlo,
   sensibilidad y aceleración del puntero), zoom, comandos de voz, modo fluido y "Restablecer".
-- **Video con DRM en modo fluido** (Netflix, Disney+, Prime Video, Max y otras): el visor muestra copias de
-  la pantalla que compone el sistema, sin corrección de lente.
+- **Video con DRM en modo fluido** (Netflix, Disney+, Prime Video, Max, Flow y otras): el visor muestra
+  copias de la pantalla que compone el sistema, sin corrección de lente.
 - **Apps recientes en el panel:** sección "RECIENTES" con las apps abiertas durante la sesión.
 - **Setup guiado del modo fluido** (issues #39 y #40), en **Ajustes › Modo fluido**: pasos con tilde, un
   botón que lleva a "Acerca del teléfono" o a "Depuración inalámbrica" según lo que falte, y un marco
@@ -51,6 +53,9 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
 
 ### Corregido
 
+- Disney+, Max y Flow se veían en negro en el visor en modo fluido (issue #48).
+- En el reproductor de Disney+ el gatillo no tocaba nada: no se podía pausar ni adelantar.
+- Con la mayoría de las apps al frente, la barra no mostraba el botón Vertical.
 - Si el sistema cancela el dedo apoyado, CeluVR ya no lo da por apoyado hasta que se suelte el gatillo.
 - El gatillo sobre los diálogos de permisos del sistema no hacía nada (issue #29).
 - Al cerrar el visor, otra app quedaba adelante de CeluVR (issue #32).
@@ -72,7 +77,9 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
 - El resaltado del setup lee los textos de la app Ajustes del celular; está probado en One UI (es-US).
 - El zoom recorta el frame que ya se captura, sin subir la resolución: cada ojo muestra la captura
   achicada a la mitad, así que hasta 2× no se agranda ningún píxel. Con las apps con DRM recorta el sistema.
-- Con Disney+ el zoom no funciona; queda para un issue aparte.
+- Con las copias de pantalla a la vista, los toques se hacen sobre la copia del ojo izquierdo: Android
+  descarta los toques a una ventana protegida dentro de la pantalla virtual. Sin zoom tienen un tercio de
+  la precisión habitual.
 
 ## [1.1.0] — 2026-10-22
 
