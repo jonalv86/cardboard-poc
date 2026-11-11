@@ -5,9 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.opengl.GLES20
 import android.os.SystemClock
 import android.view.ViewConfiguration
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -42,17 +44,27 @@ class OverlayUi(private val context: Context) {
     /** Textura del ícono de cada [ControlBar.Button], indexada por su ordinal. */
     private var iconTextureIds = IntArray(0)
 
+    /** Ícono del botón de zoom con cada nivel de [ZoomLevels.STEPS], indexado como esa lista. */
+    private var zoomIconTextureIds = IntArray(0)
+
     /** Si en este cuadro se dibuja el aviso de modo mouse. */
     private var noticeVisible = false
 
-    /**
-     * Pantalla capturada y cursor, en píxeles, tomados una vez por cuadro. Sin tamaño de pantalla no
-     * se dibuja la UI.
-     */
+    /** Pantalla capturada, tomada una vez por cuadro. Sin tamaño de pantalla no se dibuja la UI. */
     private var screenWidth = 0
     private var screenHeight = 0
-    private var cursorX = 0f
-    private var cursorY = 0f
+
+    /**
+     * Imagen visible y cursor en píxeles de la vista ([ZoomWindow]), tomados una vez por cuadro. La UI
+     * se ubica en esas unidades: sigue a la imagen con zoom, pero no se agranda con ella.
+     */
+    private var viewWidth = 0f
+    private var viewHeight = 0f
+    private var viewCursorX = 0f
+    private var viewCursorY = 0f
+
+    /** Lugar de la barra en la vista en este cuadro. */
+    private var barFrame = ControlBar.Frame(0, 0, 0f)
 
     /**
      * Estado visual de la UI. Los valores animados van de 0 a 1 y siguen a su objetivo con una
@@ -73,6 +85,9 @@ class OverlayUi(private val context: Context) {
     /** Si la pantalla capturada está en vertical, para resaltar su botón. */
     private var portraitActive = false
 
+    /** Zoom pedido, para mostrarlo en su botón y resaltarlo cuando no es 1. */
+    private var zoomLevel = 1f
+
     /** Último borde tocado; se conserva para animar la salida después de dejarlo. */
     private var edgeDirX = 0
     private var edgeDirY = 0
@@ -88,31 +103,41 @@ class OverlayUi(private val context: Context) {
         iconTextureIds = IntArray(ControlBar.Button.entries.size) {
             createIconTexture(ControlBar.Button.entries[it])
         }
+        zoomIconTextureIds = IntArray(ZoomLevels.STEPS.size) {
+            createZoomIconTexture(ZoomLevels.STEPS[it])
+        }
     }
 
     /**
-     * Toma el cursor y el estado del input, y avanza las animaciones con el tiempo transcurrido desde
-     * el cuadro anterior. Una vez por cuadro, antes de dibujar.
+     * Toma el cursor y la ventana visible de [view], y el estado del input, y avanza las animaciones
+     * con el tiempo transcurrido desde el cuadro anterior. Una vez por cuadro, antes de dibujar.
      */
-    fun update() {
+    fun update(view: JoystickManager.Snapshot) {
         val lastMouseEvent = JoystickManager.lastMouseModeEventMs
         noticeVisible = lastMouseEvent != 0L &&
             SystemClock.uptimeMillis() - lastMouseEvent < JoystickManager.MOUSE_MODE_NOTICE_MS
 
-        screenWidth = JoystickManager.screenWidth
-        screenHeight = JoystickManager.screenHeight
+        val window = view.window
+        screenWidth = window.screenWidth
+        screenHeight = window.screenHeight
         if (screenWidth == 0 || screenHeight == 0) {
             screenWidth = 0
             return
         }
-        cursorX = JoystickManager.cursorX.coerceIn(0f, screenWidth.toFloat())
-        cursorY = JoystickManager.cursorY.coerceIn(0f, screenHeight.toFloat())
+        val cursorX = view.cursorX.coerceIn(0f, screenWidth.toFloat())
+        val cursorY = view.cursorY.coerceIn(0f, screenHeight.toFloat())
+        viewWidth = window.viewWidth
+        viewHeight = window.viewHeight
+        barFrame = view.barFrame
+        viewCursorX = window.toViewX(cursorX).coerceIn(0f, viewWidth)
+        viewCursorY = window.toViewY(cursorY).coerceIn(0f, viewHeight)
 
         val now = SystemClock.uptimeMillis()
         val elapsedMs = if (lastFrameMs == 0L) 0L else (now - lastFrameMs).coerceAtMost(MAX_FRAME_STEP_MS)
         lastFrameMs = now
         val step = 1f - exp(-elapsedMs / ANIMATION_TIME_CONSTANT_MS)
 
+        // En píxeles de pantalla: son los mismos límites con los que la app decide si el dedo se movió.
         val mode = ReticleState.mode(
             JoystickManager.press, JoystickManager.edgeContact,
             cursorX, cursorY, now, longPressMs, touchSlopPx
@@ -158,8 +183,11 @@ class OverlayUi(private val context: Context) {
         barReveal += ((if (barVisible) 1f else 0f) - barReveal) * step
         barButtons = ControlBar.buttons
         portraitActive = ScreenCaptureService.portrait.value
+        zoomLevel = JoystickManager.zoomLevel
         val hovered = if (barVisible) {
-            ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight, barButtons)
+            ControlBar.buttonAt(
+                viewCursorX - barFrame.shiftX, viewCursorY, barFrame.width, barFrame.height, barButtons
+            )
         } else {
             null
         }
@@ -167,13 +195,14 @@ class OverlayUi(private val context: Context) {
     }
 
     /**
-     * Dibuja el brillo del borde, la barra y la retícula sobre la imagen capturada, que ocupa el medio
-     * tamaño ([imageScaleX], [imageScaleY]) del viewport actual, de [viewportWidthPx] de ancho. Así la
-     * UI queda sobre los mismos píxeles que va a recibir el click. Sin pantalla no dibuja nada.
+     * Dibuja el brillo del borde, la barra y la retícula sobre la imagen visible, centrada en el
+     * viewport actual, de [viewportWidthPx] de ancho. ([imageScaleX], [imageScaleY]) es el medio tamaño
+     * que tendría la imagen sin zoom: da la escala de la UI, que no cambia con el zoom. La retícula queda
+     * sobre los mismos píxeles que va a recibir el click. Sin pantalla no dibuja nada.
      */
     fun draw(imageScaleX: Float, imageScaleY: Float, viewportWidthPx: Float) {
         if (screenWidth == 0) return
-        val space = ScreenSpace(imageScaleX, imageScaleY, viewportWidthPx)
+        val space = ViewSpace(imageScaleX, imageScaleY, viewportWidthPx)
         // La UI es translúcida y los colores de los shaders y de los bitmaps están premultiplicados.
         // Se apaga al terminar para no dejarle el estado cambiado a quien dibuje después.
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
@@ -203,12 +232,14 @@ class OverlayUi(private val context: Context) {
 
     /** Libera los programas y las texturas. Corre al apagarse el render, en su hilo. */
     fun release() {
-        val textures = (intArrayOf(noticeTextureId) + iconTextureIds).filter { it != 0 }
+        val textures =
+            (intArrayOf(noticeTextureId) + iconTextureIds + zoomIconTextureIds).filter { it != 0 }
         if (textures.isNotEmpty()) {
             GLES20.glDeleteTextures(textures.size, textures.toIntArray(), 0)
         }
         noticeTextureId = 0
         iconTextureIds = IntArray(0)
+        zoomIconTextureIds = IntArray(0)
         texturedProgram?.let { GLES20.glDeleteProgram(it.id) }
         texturedProgram = null
         listOfNotNull(reticleProgram, shapeProgram, glowProgram).forEach {
@@ -221,18 +252,19 @@ class OverlayUi(private val context: Context) {
     }
 
     /**
-     * Pasa de píxeles de la pantalla capturada a coordenadas del viewport, con la misma escala que la
-     * imagen capturada.
+     * Pasa de píxeles de la vista a coordenadas del viewport, con la escala que tendría la imagen sin
+     * zoom, de medio tamaño ([scaleX], [scaleY]).
      */
-    private inner class ScreenSpace(scaleX: Float, scaleY: Float, viewportWidthPx: Float) {
+    private inner class ViewSpace(scaleX: Float, scaleY: Float, viewportWidthPx: Float) {
+        // Sin zoom la vista mide lo mismo que la pantalla, así que da la escala de la imagen sin zoom.
         private val ndcPerPxX = 2f * scaleX / screenWidth
         private val ndcPerPxY = 2f * scaleY / screenHeight
 
-        /** Píxeles de pantalla que caen en un píxel del framebuffer, para el antialias de los shaders. */
+        /** Píxeles de la vista que caen en un píxel del framebuffer, para el antialias de los shaders. */
         val pxPerFramebufferPx = screenWidth / (scaleX * viewportWidthPx)
 
-        fun x(px: Float): Float = (px - screenWidth / 2f) * ndcPerPxX
-        fun y(px: Float): Float = (screenHeight / 2f - px) * ndcPerPxY
+        fun x(px: Float): Float = (px - viewWidth / 2f) * ndcPerPxX
+        fun y(px: Float): Float = (viewHeight / 2f - px) * ndcPerPxY
         fun width(px: Float): Float = px * ndcPerPxX
         fun height(px: Float): Float = px * ndcPerPxY
     }
@@ -252,12 +284,12 @@ class OverlayUi(private val context: Context) {
 
     /**
      * Activa [ui] y ubica su quad centrado en ([centerX], [centerY]) con medio tamaño
-     * ([halfWidth], [halfHeight]), todo en píxeles de pantalla. Los uniforms propios del programa
+     * ([halfWidth], [halfHeight]), todo en píxeles de la vista. Los uniforms propios del programa
      * se cargan después, antes de [drawUiQuad].
      */
     private fun useUiQuad(
         ui: UiProgram,
-        space: ScreenSpace,
+        space: ViewSpace,
         centerX: Float,
         centerY: Float,
         halfWidth: Float,
@@ -298,12 +330,15 @@ class OverlayUi(private val context: Context) {
         return GlQuad.uploadTexture(bitmap)
     }
 
-    /** Rasteriza el ícono vectorial del botón a una textura, una sola vez. */
+    /**
+     * Rasteriza el ícono vectorial del botón a una textura, una sola vez. El de zoom cambia con el
+     * nivel y sale de [createZoomIconTexture].
+     */
     private fun createIconTexture(button: ControlBar.Button): Int {
         val resId = when (button) {
             ControlBar.Button.HOME -> R.drawable.ic_apps_rounded
             ControlBar.Button.PORTRAIT -> R.drawable.ic_screen_rotation
-            ControlBar.Button.SCROLL_TOP -> R.drawable.ic_vertical_align_top
+            ControlBar.Button.ZOOM -> return 0
         }
         val drawable = context.getDrawable(resId) ?: return 0
         val bitmap = Bitmap.createBitmap(ICON_TEXTURE_PX, ICON_TEXTURE_PX, Bitmap.Config.ARGB_8888)
@@ -312,17 +347,52 @@ class OverlayUi(private val context: Context) {
         return GlQuad.uploadTexture(bitmap)
     }
 
+    /** Rasteriza el ícono del botón de zoom con [level] escrito abajo de la lupa, una sola vez por nivel. */
+    private fun createZoomIconTexture(level: Float): Int {
+        val bitmap = Bitmap.createBitmap(ICON_TEXTURE_PX, ICON_TEXTURE_PX, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val size = ICON_TEXTURE_PX
+        context.getDrawable(R.drawable.ic_zoom)?.let {
+            val glyph = (size * ZOOM_GLYPH_FRACTION).toInt()
+            val left = (size - glyph) / 2
+            it.setBounds(left, 0, left + glyph, glyph)
+            it.draw(canvas)
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = size * ZOOM_TEXT_FRACTION
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val label = zoomLabel(level)
+        // "1,5×" es el más ancho: se achica lo justo para que entre en el ícono.
+        val width = paint.measureText(label)
+        if (width > size * 0.96f) paint.textSize *= size * 0.96f / width
+        canvas.drawText(label, size / 2f, size * 0.95f, paint)
+        return GlQuad.uploadTexture(bitmap)
+    }
+
+    /** Nivel de zoom como se lee en el botón: "1×", "1,5×", "2×". */
+    private fun zoomLabel(level: Float): String {
+        val number = if (level % 1f == 0f) {
+            level.toInt().toString()
+        } else {
+            String.format(Locale.forLanguageTag("es-AR"), "%.1f", level)
+        }
+        return "$number×"
+    }
+
     /** Brillo a lo largo del borde hacia el que apunta el indicador de avance. */
-    private fun drawEdgeGlow(space: ScreenSpace) {
+    private fun drawEdgeGlow(space: ViewSpace) {
         val glowUi = glowProgram ?: return
         if (glow <= 0.01f || (edgeDirX == 0 && edgeDirY == 0)) return
 
-        val halfWidth = if (edgeDirX != 0) GLOW_THICKNESS_PX / 2f else screenWidth / 2f
-        val halfHeight = if (edgeDirY != 0) GLOW_THICKNESS_PX / 2f else screenHeight / 2f
+        val halfWidth = if (edgeDirX != 0) GLOW_THICKNESS_PX / 2f else viewWidth / 2f
+        val halfHeight = if (edgeDirY != 0) GLOW_THICKNESS_PX / 2f else viewHeight / 2f
         useUiQuad(
             glowUi, space,
-            screenWidth / 2f + edgeDirX * (screenWidth / 2f - halfWidth),
-            screenHeight / 2f + edgeDirY * (screenHeight / 2f - halfHeight),
+            viewWidth / 2f + edgeDirX * (viewWidth / 2f - halfWidth),
+            viewHeight / 2f + edgeDirY * (viewHeight / 2f - halfHeight),
             halfWidth, halfHeight
         )
         // En GL el eje vertical crece hacia arriba y en la pantalla hacia abajo.
@@ -332,27 +402,31 @@ class OverlayUi(private val context: Context) {
     }
 
     /**
-     * Dibuja la píldora de la barra con sus botones, encima de la imagen capturada. Al aparecer sube
+     * Dibuja la píldora de la barra con sus botones, encima de la imagen visible. Al aparecer sube
      * desde el borde de abajo mientras se hace opaca; el recorrido es el margen inferior, así no se
      * sale de la imagen.
      */
-    private fun drawControlBar(space: ScreenSpace) {
+    private fun drawControlBar(space: ViewSpace) {
         val shapeUi = shapeProgram ?: return
         val textured = texturedProgram ?: return
         if (barReveal < 0.01f) return
-        val bar = ControlBar.bounds(screenWidth, screenHeight, barButtons)
+        val frame = barFrame
+        val bar = ControlBar.bounds(frame.width, frame.height, barButtons)
         val centerY = bar.centerY + (1f - barReveal) * ControlBar.BOTTOM_MARGIN_PX
         drawRoundedBox(
-            shapeUi, space, bar.centerX, centerY, bar.width / 2f, bar.height / 2f,
+            shapeUi, space, bar.centerX + frame.shiftX, centerY, bar.width / 2f, bar.height / 2f,
             fillAlpha = BAR_FILL_ALPHA * barReveal, fillWhite = false,
             borderAlpha = BAR_BORDER_ALPHA * barReveal
         )
 
         val radius = ControlBar.BUTTON_DIAMETER_PX / 2f
-        val iconHalf = radius * ICON_SIZE_FRACTION
         barButtons.forEachIndexed { index, button ->
-            val centerX = ControlBar.buttonCenterX(index, screenWidth, screenHeight, barButtons)
-            val active = button == ControlBar.Button.PORTRAIT && portraitActive
+            val centerX = frame.shiftX +
+                ControlBar.buttonCenterX(index, frame.width, frame.height, barButtons)
+            val zoom = button == ControlBar.Button.ZOOM
+            val active = (button == ControlBar.Button.PORTRAIT && portraitActive) ||
+                (zoom && zoomLevel > 1f)
+            val iconHalf = radius * if (zoom) ZOOM_ICON_SIZE_FRACTION else ICON_SIZE_FRACTION
             val highlight = (if (active) BUTTON_ACTIVE_ALPHA else 0f) +
                 (if (index == hoveredButton) BUTTON_HOVER_ALPHA else 0f)
             if (highlight > 0f) {
@@ -362,7 +436,11 @@ class OverlayUi(private val context: Context) {
                     borderAlpha = if (active) BAR_BORDER_ALPHA * barReveal else 0f
                 )
             }
-            val icon = iconTextureIds.getOrElse(button.ordinal) { 0 }
+            val icon = if (zoom) {
+                zoomIconTextureIds.getOrElse(ZoomLevels.indexOf(zoomLevel)) { 0 }
+            } else {
+                iconTextureIds.getOrElse(button.ordinal) { 0 }
+            }
             if (icon != 0) {
                 GlQuad.draw(
                     textured,
@@ -383,7 +461,7 @@ class OverlayUi(private val context: Context) {
      */
     private fun drawRoundedBox(
         ui: UiProgram,
-        space: ScreenSpace,
+        space: ViewSpace,
         centerX: Float,
         centerY: Float,
         halfWidth: Float,
@@ -408,12 +486,12 @@ class OverlayUi(private val context: Context) {
      * Dibuja la retícula sobre el cursor. Sobre un borde se transforma en el indicador de avance, que
      * se corre hacia adentro para verse entero.
      */
-    private fun drawReticle(space: ScreenSpace) {
+    private fun drawReticle(space: ViewSpace) {
         val reticleUi = reticleProgram ?: return
         val style = reticleStyle
         val shift = (INDICATOR_RADIUS_PX + INDICATOR_EDGE_GAP_PX) * morph
-        val centerX = cursorX - edgeDirX * shift
-        val centerY = cursorY - edgeDirY * shift
+        val centerX = viewCursorX - edgeDirX * shift
+        val centerY = viewCursorY - edgeDirY * shift
         val half = maxOf(INDICATOR_RADIUS_PX, style.radiusPx) + RETICLE_MARGIN_PX
         useUiQuad(reticleUi, space, centerX, centerY, half, half)
 
@@ -460,6 +538,16 @@ class OverlayUi(private val context: Context) {
 
         /** Medio lado del ícono respecto del radio del botón. */
         const val ICON_SIZE_FRACTION = 0.5f
+
+        /**
+         * Medio lado del ícono de zoom respecto del radio del botón: más grande que los otros, porque
+         * lleva el nivel escrito y tiene que leerse.
+         */
+        const val ZOOM_ICON_SIZE_FRACTION = 0.95f
+
+        /** Lado de la lupa y alto del texto del ícono de zoom, como fracción de su textura. */
+        const val ZOOM_GLYPH_FRACTION = 0.42f
+        const val ZOOM_TEXT_FRACTION = 0.5f
 
         const val BAR_FILL_ALPHA = 0.55f
         const val BAR_BORDER_ALPHA = 0.28f

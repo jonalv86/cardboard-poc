@@ -53,6 +53,71 @@ object JoystickManager {
     /** Desplazamiento vertical que aporta la cabeza, en píxeles; 0 sin giroscopio. */
     private var headOffsetY = 0f
 
+    /** Cursor y parte de la pantalla que se ve en el visor, tomados en el mismo instante. */
+    class Snapshot(
+        /** Posición horizontal del cursor, en píxeles de pantalla. */
+        val cursorX: Float,
+        /** Posición vertical del cursor, en píxeles de pantalla. */
+        val cursorY: Float,
+        /** Parte de la pantalla que se ve en el visor. */
+        val window: ZoomWindow,
+        /** Posición horizontal, en píxeles de pantalla, en la que está anclada la [ControlBar]. */
+        val barAnchorX: Float
+    ) {
+        /** Lugar de la [ControlBar] en la vista. */
+        val barFrame: ControlBar.Frame get() = ControlBar.frame(window, barAnchorX)
+    }
+
+    /** Zoom máximo de la imagen del visor. */
+    const val MAX_ZOOM = 3f
+
+    /** Zona muerta con que arranca el zoom: la ventana sigue al cursor centrada, como una pantalla de cine. */
+    private const val DEFAULT_ZOOM_DEAD_ZONE = 0f
+
+    /**
+     * Zoom pedido para la imagen del visor, entre 1 (la pantalla entera) y [MAX_ZOOM]. Lo lee el hilo
+     * de render para mostrarlo en la barra.
+     */
+    @Volatile
+    var zoomLevel = 1f
+        private set
+
+    /** Fracción de la ventana con zoom en la que el cursor se mueve sin arrastrarla; ver [ZoomWindow.follow]. */
+    private var zoomDeadZone = DEFAULT_ZOOM_DEAD_ZONE
+
+    /** Cómo entra la imagen en el ojo, según el render. */
+    private var zoomFit = ZoomFit.FULL
+
+    /** Medio alto máximo de la imagen con zoom que reemplaza al del render, o 0 para usar el del render. */
+    private var zoomMaxHalfHeight = 0f
+
+    /** Parte de la pantalla que se ve en el visor; se modifica con el lock tomado. */
+    private var zoomWindow = ZoomWindow.of(0, 0, ZoomFit.FULL, 1f)
+
+    /**
+     * Cursor y ventana visible del último movimiento. El hilo de render lo lee una vez por cuadro, así
+     * dibuja la imagen y la retícula con la misma ventana.
+     */
+    @Volatile
+    var snapshot = Snapshot(0f, 0f, zoomWindow, 0f)
+        private set
+
+    /**
+     * Posición horizontal, en píxeles de pantalla, en la que se ancla la [ControlBar]. Mientras está
+     * oculta sigue al centro de la ventana visible, así aparece centrada en la vista; mientras está a la
+     * vista queda fija, y con zoom el cursor recorre sus botones.
+     */
+    private var barAnchorX = 0f
+
+    /**
+     * Cuántas veces cambió el zoom efectivo. La fuente de la cabeza lo compara con el último valor que
+     * atendió para tomar como frente la orientación de ese momento: mide su desplazamiento con la
+     * escala del zoom, y con la escala nueva el cursor saltaría.
+     */
+    @Volatile
+    var zoomChangeCount = 0
+        private set
+
     // Umbral de zona muerta para contrarrestar el drift natural de los sticks analógicos
     private const val DEAD_ZONE = 0.15f
 
@@ -91,7 +156,8 @@ object JoystickManager {
             val elapsedSeconds = (now - lastTickMs) / 1000f
             lastTickMs = now
             val ramp = ((now - moveStartMs) / ACCELERATION_MS).coerceAtMost(1f)
-            val speed = MIN_SPEED + (MAX_SPEED - MIN_SPEED) * ramp
+            // La velocidad es la que se ve en el visor: con zoom, el mismo recorrido es menos pantalla.
+            val speed = (MIN_SPEED + (MAX_SPEED - MIN_SPEED) * ramp) / snapshot.window.zoom
             moveBase(dx * speed * elapsedSeconds, dy * speed * elapsedSeconds)
             refreshEdgeContact()
             handler.postDelayed(this, TICK_MS)
@@ -204,6 +270,7 @@ object JoystickManager {
         screenWidth = width
         screenHeight = height
         updateCursor()
+        rebuildZoomWindow()
         Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
         refreshEdgeContact()
     }
@@ -212,10 +279,12 @@ object JoystickManager {
 
     /**
      * Registra el desplazamiento que aporta la cabeza, en píxeles desde la posición del joystick. Se
-     * llama desde el hilo de render, una vez por cuadro.
+     * llama desde el hilo de render, una vez por cuadro. [zoomChange] es el [zoomChangeCount] con cuya
+     * escala se midió: si el zoom cambió después, el desplazamiento se descarta.
      */
-    fun setHeadOffset(dx: Float, dy: Float) {
+    fun setHeadOffset(dx: Float, dy: Float, zoomChange: Int) {
         synchronized(this) {
+            if (zoomChange != zoomChangeCount) return
             headOffsetX = dx
             headOffsetY = dy
             updateCursor()
@@ -233,7 +302,10 @@ object JoystickManager {
     var recenterCount = 0
         private set
 
-    /** Lleva el cursor al centro de la pantalla y descarta el desplazamiento del joystick y de la cabeza. */
+    /**
+     * Lleva el cursor y la ventana con zoom al centro de la pantalla, y descarta el desplazamiento del
+     * joystick y de la cabeza.
+     */
     fun recenter() {
         synchronized(this) {
             if (screenWidth == 0 || screenHeight == 0) return
@@ -241,6 +313,7 @@ object JoystickManager {
             baseY = screenHeight / 2f
             headOffsetX = 0f
             headOffsetY = 0f
+            zoomWindow = zoomWindow.centered()
             updateCursor()
             recenterCount++
         }
@@ -272,12 +345,96 @@ object JoystickManager {
         }
     }
 
+    /**
+     * Recalcula el cursor, corre la ventana con zoom para seguirlo y decide si la [ControlBar] queda a
+     * la vista. La barra está anclada al borde de abajo de la pantalla: con zoom, bajar por la pantalla
+     * la hace avanzar, y la barra aparece recién al llegar abajo de todo.
+     */
     private fun updateCursor() {
         if (screenWidth == 0 || screenHeight == 0) return
         cursorX = (baseX + headOffsetX).coerceIn(0f, screenWidth.toFloat())
         cursorY = (baseY + headOffsetY).coerceIn(0f, screenHeight.toFloat())
+        val window = zoomWindow.follow(cursorX, cursorY, zoomDeadZone)
+        zoomWindow = window
+        if (!controlBarVisible) barAnchorX = window.centerX
+        val bar = ControlBar.frame(window, barAnchorX)
         controlBarVisible = !pressing &&
-            ControlBar.nextVisible(controlBarVisible, cursorX, cursorY, screenWidth, screenHeight)
+            ControlBar.nextVisible(
+                controlBarVisible, window.toViewX(cursorX) - bar.shiftX, window.toViewY(cursorY),
+                bar.width, bar.height
+            )
+        snapshot = Snapshot(cursorX, cursorY, window, barAnchorX)
+    }
+
+    /**
+     * Cambia el zoom de la imagen del visor, entre 1 (la pantalla entera) y [MAX_ZOOM]. El punto bajo
+     * el cursor queda en el mismo lugar.
+     */
+    fun setZoom(level: Float) {
+        synchronized(this) {
+            zoomLevel = level.coerceIn(1f, MAX_ZOOM)
+            rebuildZoomWindow()
+        }
+        refreshEdgeContact()
+    }
+
+    /** Registra cómo entra la imagen en el ojo. Lo llama el render cuando cambia. */
+    fun setZoomFit(fit: ZoomFit) {
+        synchronized(this) {
+            if (fit == zoomFit) return
+            zoomFit = fit
+            rebuildZoomWindow()
+        }
+    }
+
+    /**
+     * Cambia la fracción de la ventana con zoom en la que el cursor se mueve sin arrastrarla: 0 la
+     * centra en el cursor y 1 la mueve solo cuando el cursor empuja su borde.
+     */
+    fun setZoomDeadZone(fraction: Float) {
+        synchronized(this) {
+            zoomDeadZone = fraction.coerceIn(0f, 1f)
+            updateCursor()
+        }
+        Log.d(TAG, "Zoom: zona muerta $zoomDeadZone")
+    }
+
+    /**
+     * Cambia el medio alto (1 = el ojo entero) hasta el que crece la imagen con zoom; 0 vuelve al que
+     * calcula el render.
+     */
+    fun setZoomMaxHalfHeight(halfHeight: Float) {
+        synchronized(this) {
+            zoomMaxHalfHeight = halfHeight.coerceIn(0f, 1f)
+            rebuildZoomWindow()
+        }
+    }
+
+    /**
+     * Rehace la ventana visible con el zoom, el encaje y el tamaño de pantalla actuales. Si cambia el
+     * zoom efectivo, el cursor queda donde está, con todo su desplazamiento pasado al joystick, y la
+     * cabeza toma un frente nuevo. Con la [ControlBar] a la vista, el cursor queda sobre el mismo punto
+     * de la barra: ella no cambia de tamaño con el zoom, y sin esto el botón de zoom quedaría fuera
+     * del cursor después de tocarlo.
+     */
+    private fun rebuildZoomWindow() {
+        val fit = if (zoomMaxHalfHeight > 0f) zoomFit.copy(maxHalfHeight = zoomMaxHalfHeight) else zoomFit
+        val window = zoomWindow.rebuilt(screenWidth, screenHeight, fit, zoomLevel, cursorX, cursorY)
+        if (window.zoom != zoomWindow.zoom) {
+            if (controlBarVisible) {
+                val ratio = zoomWindow.zoom / window.zoom
+                cursorX = barAnchorX + (cursorX - barAnchorX) * ratio
+                cursorY = screenHeight - (screenHeight - cursorY) * ratio
+            }
+            baseX = cursorX
+            baseY = cursorY
+            headOffsetX = 0f
+            headOffsetY = 0f
+            zoomChangeCount++
+        }
+        zoomWindow = window
+        updateCursor()
+        Log.d(TAG, "Zoom: $zoomWindow")
     }
 
     /**
@@ -372,13 +529,17 @@ object JoystickManager {
      * ejecuta el botón que esté bajo el cursor, y en el resto de la píldora no hace nada.
      */
     fun pressDown() {
+        val view = snapshot
+        val bar = view.barFrame
+        val barX = view.window.toViewX(view.cursorX) - bar.shiftX
+        val barY = view.window.toViewY(view.cursorY)
         if (controlBarVisible && ScreenCaptureService.isCapturing &&
-            ControlBar.contains(cursorX, cursorY, screenWidth, screenHeight)
+            ControlBar.contains(barX, barY, bar.width, bar.height)
         ) {
-            when (ControlBar.buttonAt(cursorX, cursorY, screenWidth, screenHeight)) {
+            when (ControlBar.buttonAt(barX, barY, bar.width, bar.height)) {
                 ControlBar.Button.HOME -> showPanel()
                 ControlBar.Button.PORTRAIT -> togglePortrait()
-                ControlBar.Button.SCROLL_TOP -> scrollToTop()
+                ControlBar.Button.ZOOM -> setZoom(ZoomLevels.next(zoomLevel))
                 null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
             }
             return
@@ -482,17 +643,6 @@ object JoystickManager {
         val portrait = !ScreenCaptureService.portrait.value
         Log.d(TAG, "Vertical: $portrait")
         service.startService(ScreenCaptureService.portraitIntent(service, portrait))
-    }
-
-    /**
-     * Desplaza el contenido de la pantalla actual al principio (tope).
-     */
-    fun scrollToTop() {
-        if (PanelActivity.isInFront) {
-            PanelActivity.scrollToTop()
-        } else {
-            accessibilityService?.scrollToTop()
-        }
     }
 
     /**

@@ -80,8 +80,8 @@ internal object GlQuad {
 
     /**
      * Dibuja [texture] con [textured] en un quad de medio tamaño ([scaleX], [scaleY]) corrido
-     * ([offsetX], [offsetY]). De la textura toma la franja vertical que empieza en [texOffsetY] y mide
-     * [texScaleY]; con una medida negativa la toma invertida.
+     * ([offsetX], [offsetY]). De la textura toma el rectángulo que empieza en ([texOffsetX],
+     * [texOffsetY]) y mide [texScaleX] x [texScaleY]; con una medida negativa lo toma invertido en ese eje.
      */
     fun draw(
         textured: TexturedProgram,
@@ -92,7 +92,9 @@ internal object GlQuad {
         offsetY: Float,
         alpha: Float = 1f,
         texScaleY: Float = 1f,
-        texOffsetY: Float = 0f
+        texOffsetY: Float = 0f,
+        texScaleX: Float = 1f,
+        texOffsetX: Float = 0f
     ) {
         GLES20.glUseProgram(textured.id)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -100,8 +102,8 @@ internal object GlQuad {
         GLES20.glUniform1i(textured.texture, 0)
         GLES20.glUniform2f(textured.scale, scaleX, scaleY)
         GLES20.glUniform2f(textured.offset, offsetX, offsetY)
-        GLES20.glUniform2f(textured.texScale, 1f, texScaleY)
-        GLES20.glUniform2f(textured.texOffset, 0f, texOffsetY)
+        GLES20.glUniform2f(textured.texScale, texScaleX, texScaleY)
+        GLES20.glUniform2f(textured.texOffset, texOffsetX, texOffsetY)
         GLES20.glUniform1f(textured.alpha, alpha)
 
         GLES20.glEnableVertexAttribArray(textured.position)

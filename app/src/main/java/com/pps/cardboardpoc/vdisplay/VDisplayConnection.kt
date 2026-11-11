@@ -31,6 +31,18 @@ object VDisplayConnection {
         Log.d(TAG, "servidor de pantalla virtual conectado")
     }
 
+    /** Termina el proceso servidor, si hay uno conectado, y lo descarta. */
+    fun shutdown() {
+        val current = server ?: return
+        server = null
+        try {
+            current.shutdown()
+        } catch (e: Exception) {
+            // El servidor sale con System.exit dentro de la llamada, así que la respuesta no llega nunca.
+        }
+        Log.d(TAG, "servidor de pantalla virtual: apagado por la app")
+    }
+
     /** Si hay un servidor conectado y su proceso sigue vivo. */
     fun isAvailable(): Boolean {
         val current = server ?: return false
