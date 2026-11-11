@@ -1,5 +1,6 @@
 package com.pps.cardboardpoc
 
+import android.graphics.PointF
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -38,9 +39,31 @@ object JoystickManager {
     var screenHeight = 0
         private set
 
+    /**
+     * Paquete de la app al frente de la pantalla virtual del visor, o null sobre el panel, sin app a la
+     * vista o con la proyección. Lo actualiza [FrontAppDetector] en cada revisión.
+     */
+    @Volatile
+    var virtualFrontApp: String? = null
+
+    /**
+     * Si el panel de apps es lo que está al frente. Lo actualizan en el acto la reanudación y la pausa
+     * del panel; en la pantalla virtual, además, [FrontAppDetector] lo corrige por el orden de las
+     * ventanas, porque las apps en multiventana tapan al panel sin pausarlo.
+     */
+    @Volatile
+    var panelInFront = false
+
     /** Pantalla donde caen los toques y donde se abre el panel: la física, o la virtual del visor. */
     @Volatile
     var targetDisplayId = Display.DEFAULT_DISPLAY
+
+    /**
+     * Mientras los clones muestran la pantalla virtual, pasa un punto de ella al lugar de la pantalla
+     * física donde lo muestra un clon; null sin clones. Lo fija [StereoOverlay] al mostrarlos y quitarlos.
+     */
+    @Volatile
+    var mirroredPoint: ((x: Float, y: Float) -> PointF?)? = null
 
     /** Posición horizontal que aporta el joystick, en píxeles de pantalla. */
     private var baseX = 0f
@@ -584,6 +607,7 @@ object JoystickManager {
         ) {
             when (ControlBar.buttonAt(barX, barY, bar.width, bar.height)) {
                 ControlBar.Button.HOME -> showPanel()
+                ControlBar.Button.SCROLL_TOP -> scrollToTop()
                 ControlBar.Button.PORTRAIT -> togglePortrait()
                 ControlBar.Button.ZOOM -> setZoom(ZoomLevels.next(zoomLevel))
                 null -> Log.d(TAG, "Gatillo en la barra, fuera de los botones: no se toca la app")
@@ -678,6 +702,16 @@ object JoystickManager {
         val service = accessibilityService ?: return
         Log.d(TAG, "Inicio: vuelve al panel")
         PanelActivity.show(service)
+    }
+
+    /**
+     * Lleva al principio del contenido: el panel a su tope, o la lista principal de la app al frente.
+     * Fuera de la captura no hace nada.
+     */
+    fun scrollToTop() {
+        if (!ScreenCaptureService.isCapturing) return
+        Log.d(TAG, "Ir arriba: ${if (panelInFront) "panel" else "app al frente"}")
+        if (panelInFront) PanelActivity.scrollToTop() else accessibilityService?.scrollToTop()
     }
 
     /**

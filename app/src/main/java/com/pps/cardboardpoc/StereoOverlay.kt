@@ -66,6 +66,9 @@ class StereoOverlay(private val context: AccessibilityService) {
     /** Rectángulo de cada clon en la ventana y escala que lo llena sin zoom; los calcula [layoutMirrors]. */
     private var mirrorRects: List<RectF> = emptyList()
     private var mirrorBaseScale = 1f
+
+    /** Ventana con zoom con la que se ubicaron los clones por última vez; null sin clones ubicados. */
+    private var mirrorWindow: ZoomWindow? = null
     private val mirrorLayoutListener =
         View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutMirrors() }
 
@@ -144,7 +147,22 @@ class StereoOverlay(private val context: AccessibilityService) {
         showMirrorUi()
         view.addOnLayoutChangeListener(mirrorLayoutListener)
         layoutMirrors()
+        JoystickManager.mirroredPoint = ::mirroredPoint
         return true
+    }
+
+    /**
+     * Punto de esta ventana, que ocupa la pantalla física, donde el clon del ojo izquierdo muestra el
+     * punto ([x], [y]) de la pantalla virtual. Null si no hay clones ubicados.
+     */
+    private fun mirroredPoint(x: Float, y: Float): PointF? = synchronized(mirrorLock) {
+        val rect = mirrorRects.firstOrNull() ?: return null
+        val window = mirrorWindow ?: return null
+        val scale = mirrorBaseScale * window.zoom
+        PointF(
+            rect.left + (x - window.fractionLeft * mirrorSourceWidth) * scale,
+            rect.top + (y - window.fractionTop * mirrorSourceHeight) * scale
+        )
     }
 
     /**
@@ -188,6 +206,7 @@ class StereoOverlay(private val context: AccessibilityService) {
     /** Descuelga y libera los clones, y la imagen estéreo vuelve a dibujarse. No hace nada si no hay. */
     fun hideMirrors() {
         if (mirrors.isEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        JoystickManager.mirroredPoint = null
         cardboardView?.removeOnLayoutChangeListener(mirrorLayoutListener)
         mirrorUi?.let { removeWindow(it) }
         mirrorUi = null
@@ -200,6 +219,7 @@ class StereoOverlay(private val context: AccessibilityService) {
             mirrors.forEach { it.release() }
             mirrors = emptyList()
             mirrorRects = emptyList()
+            mirrorWindow = null
         }
         Log.d(TAG, "clones: quitados")
     }
@@ -275,6 +295,7 @@ class StereoOverlay(private val context: AccessibilityService) {
                 .setVisibility(mirror, true)
         }
         transaction.apply()
+        mirrorWindow = window
     }
 
     /**

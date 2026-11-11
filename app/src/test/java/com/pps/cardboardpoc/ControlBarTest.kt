@@ -79,6 +79,30 @@ class ControlBarTest {
     }
 
     @Test
+    fun `con el panel al frente no hay boton de inicio y si de ir arriba`() {
+        val buttons = ControlBar.buttonsFor(panelInFront = true, virtualAppInFront = false)
+        assertFalse(Button.HOME in buttons)
+        assertTrue(Button.SCROLL_TOP in buttons)
+        assertFalse(Button.PORTRAIT in buttons)
+    }
+
+    @Test
+    fun `con una app al frente la barra empieza con inicio e ir arriba`() {
+        assertEquals(
+            listOf(Button.HOME, Button.SCROLL_TOP, Button.ZOOM),
+            ControlBar.buttonsFor(panelInFront = false, virtualAppInFront = false)
+        )
+    }
+
+    @Test
+    fun `con una app al frente de la pantalla virtual aparece vertical`() {
+        assertEquals(
+            listOf(Button.HOME, Button.SCROLL_TOP, Button.PORTRAIT, Button.ZOOM),
+            ControlBar.buttonsFor(panelInFront = false, virtualAppInFront = true)
+        )
+    }
+
+    @Test
     fun `sin zoom el marco de la barra es la pantalla`() {
         val window = ZoomWindow.of(WIDTH, HEIGHT, FIT, 1f)
         assertEquals(ControlBar.Frame(WIDTH, HEIGHT, 0f), ControlBar.frame(window, WIDTH / 2f))

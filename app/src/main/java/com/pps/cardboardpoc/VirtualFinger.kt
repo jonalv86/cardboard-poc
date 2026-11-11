@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.Display
 import kotlin.math.roundToInt
 
 /**
@@ -18,6 +19,11 @@ import kotlin.math.roundToInt
  * inyecta como una cadena de tramos con willContinue: cada tramo se despacha recién en el callback del
  * anterior y arranca exactamente donde terminó ese. El toque atraviesa la ventana estéreo, que no
  * recibe toques, y llega a la app capturada.
+ *
+ * Los puntos que recibe son de la pantalla capturada. Si al apoyarse los clones la están mostrando, el
+ * gesto entero se inyecta en la pantalla física, sobre el clon del ojo izquierdo, y el sistema lo
+ * entrega a la ventana clonada. Dentro de la pantalla virtual, que no es segura, el sistema descarta
+ * los toques dirigidos a una ventana con FLAG_SECURE, como el reproductor de algunas apps de video.
  *
  * Despachar un gesto cancela el que esté en curso, así que dos dedos no pueden estar apoyados a la vez:
  * el que se apoya después cancela al otro.
@@ -33,9 +39,21 @@ class VirtualFinger(
     /** Último tramo despachado; null si el dedo no está apoyado. */
     private var stroke: StrokeDescription? = null
 
-    /** Punto donde termina el último tramo despachado, que es donde tiene que arrancar el siguiente. */
+    /**
+     * Punto donde termina el último tramo despachado, que es donde tiene que arrancar el siguiente, en
+     * píxeles de [displayId].
+     */
     private var lastX = 0f
     private var lastY = 0f
+
+    /** Pantalla donde se inyecta el gesto en curso. */
+    private var displayId = Display.DEFAULT_DISPLAY
+
+    /**
+     * Pasa un punto de la pantalla capturada a [displayId]; null si ya no se puede, porque se quitaron
+     * los clones sobre los que se apoyó el dedo.
+     */
+    private var toDisplay: (PointF) -> PointF? = { it }
 
     /** Si hay un tramo despachado cuyo callback todavía no llegó. */
     private var inFlight = false
@@ -78,10 +96,20 @@ class VirtualFinger(
         this.keepDown = keepDown
         this.onUp = onUp
         segmentCount = 0
-        lastX = x
-        lastY = y
-        Log.d(TAG, "$label: dedo apoyado en ($x, $y)")
-        val path = if (firstTo != null && changesPixel(firstTo)) lineTo(firstTo) else pointPath(x, y)
+        val mirror = JoystickManager.mirroredPoint
+        val start = mirror?.invoke(x, y)
+        if (mirror != null && start != null) {
+            displayId = Display.DEFAULT_DISPLAY
+            toDisplay = { mirror(it.x, it.y) }
+        } else {
+            displayId = JoystickManager.targetDisplayId
+            toDisplay = { it }
+        }
+        lastX = start?.x ?: x
+        lastY = start?.y ?: y
+        Log.d(TAG, "$label: dedo apoyado en ($x, $y), en ($lastX, $lastY) de la pantalla $displayId")
+        val first = firstTo?.let(toDisplay)
+        val path = if (first != null && changesPixel(first)) lineTo(first) else pointPath(lastX, lastY)
         dispatch(StrokeDescription(path, 0, SEGMENT_MIN_MS, true))
         return true
     }
@@ -105,8 +133,9 @@ class VirtualFinger(
         val previous = stroke ?: return
         // El objetivo puede ser el que decide que el recorrido terminó: si keepDown se mirara antes,
         // el tramo que llega al final no levantaría y el dedo se quedaría quieto un tramo entero.
-        val point = target()
-        val holding = keepDown()
+        val mapped = toDisplay(target())
+        val point = mapped ?: PointF(lastX, lastY)
+        val holding = keepDown() && mapped != null
         val moved = changesPixel(point)
         if (holding && !moved) {
             followSinceMs = SystemClock.uptimeMillis()
@@ -134,7 +163,7 @@ class VirtualFinger(
         segmentCount++
         val builder = GestureDescription.Builder().addStroke(next)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            builder.setDisplayId(JoystickManager.targetDisplayId)
+            builder.setDisplayId(displayId)
         }
         val gesture = builder.build()
         val accepted = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {

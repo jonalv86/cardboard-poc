@@ -20,10 +20,10 @@ class FrontAppDetector(
 ) {
 
     /**
-     * App al frente de la pantalla virtual. [packageName] es null sobre el panel o sin ventana de app.
-     * [fit] es cómo encaja su ventana en la pantalla.
+     * App al frente de la pantalla virtual. [packageName] es null sobre el panel o sin ventana de app;
+     * [panel] dice si lo que está al frente es el panel. [fit] es cómo encaja su ventana en la pantalla.
      */
-    data class FrontApp(val packageName: String?, val fit: WindowFit)
+    data class FrontApp(val packageName: String?, val fit: WindowFit, val panel: Boolean = false)
 
     private val bounds = Rect()
 
@@ -58,9 +58,9 @@ class FrontAppDetector(
     }
 
     private fun frontApp(): FrontApp {
-        if (PanelActivity.isInFront) return NONE
         val window = frontAppWindow() ?: return NONE
         val packageName = window.root?.packageName?.toString() ?: return NONE
+        if (packageName == service.packageName) return PANEL
 
         window.getBoundsInScreen(bounds)
         val fit = WindowFit.of(
@@ -70,19 +70,21 @@ class FrontAppDetector(
         return FrontApp(packageName, fit)
     }
 
-    /** Ventana de la app de más arriba en la pantalla virtual, sin contar las de CeluVR. */
+    /**
+     * Ventana de app de más arriba en la pantalla virtual, que puede ser la del panel. Se decide por el
+     * orden de las ventanas y no por si el panel está en primer plano: las apps se abren en
+     * multiventana, y debajo de ellas el panel sigue visible y en primer plano aunque quede tapado.
+     */
     private fun frontAppWindow(): AccessibilityWindowInfo? {
         // Sin suscripción a eventos, la lista de ventanas queda congelada si no se limpia la caché.
         service.clearCache()
         val windows = service.windowsOnAllDisplays[JoystickManager.targetDisplayId] ?: return null
-        return windows.firstOrNull {
-            it.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
-                it.root?.packageName != service.packageName
-        }
+        return windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
     }
 
     private companion object {
         val NONE = FrontApp(null, WindowFit.PARTIAL)
+        val PANEL = FrontApp(null, WindowFit.PARTIAL, panel = true)
 
         /** Cada cuánto se mira la app al frente. */
         const val CHECK_INTERVAL_MS = 300L

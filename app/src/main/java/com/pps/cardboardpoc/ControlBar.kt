@@ -1,6 +1,5 @@
 package com.pps.cardboardpoc
 
-import android.view.Display
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -18,6 +17,9 @@ object ControlBar {
         /** Vuelve al panel de apps. */
         HOME,
 
+        /** Lleva al principio del contenido: el tope del panel o de la lista de la app al frente. */
+        SCROLL_TOP,
+
         /** Pasa la app a vertical, o la devuelve a horizontal. */
         PORTRAIT,
 
@@ -25,21 +27,24 @@ object ControlBar {
         ZOOM
     }
 
-    /**
-     * Botones de la barra, de izquierda a derecha. Vertical solo aparece con la pantalla virtual, la
-     * única que se puede poner en vertical, y fuera del panel, que siempre se ve en horizontal.
-     */
+    /** Botones de la barra, de izquierda a derecha, según lo que está al frente ahora. */
     val buttons: List<Button>
-        get() = if (JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY &&
-            !PanelActivity.isInFront
-        ) {
-            WITH_PORTRAIT
-        } else {
-            HOME_ONLY
-        }
+        get() = buttonsFor(JoystickManager.panelInFront, JoystickManager.virtualFrontApp != null)
 
-    private val HOME_ONLY = listOf(Button.HOME, Button.ZOOM)
-    private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT, Button.ZOOM)
+    /**
+     * Botones de la barra, de izquierda a derecha. Inicio no aparece con el panel al frente
+     * ([panelInFront]), donde no lleva a ningún lado. Vertical solo aparece con una app al frente de la
+     * pantalla virtual ([virtualAppInFront]), la única que se puede poner en vertical.
+     */
+    fun buttonsFor(panelInFront: Boolean, virtualAppInFront: Boolean): List<Button> = when {
+        panelInFront -> ON_PANEL
+        virtualAppInFront -> ON_VIRTUAL_APP
+        else -> ON_APP
+    }
+
+    private val ON_PANEL = listOf(Button.SCROLL_TOP, Button.ZOOM)
+    private val ON_APP = listOf(Button.HOME, Button.SCROLL_TOP, Button.ZOOM)
+    private val ON_VIRTUAL_APP = listOf(Button.HOME, Button.SCROLL_TOP, Button.PORTRAIT, Button.ZOOM)
 
     /** Diámetro de cada botón. */
     const val BUTTON_DIAMETER_PX = 112f

@@ -337,6 +337,7 @@ class OverlayUi(private val context: Context) {
     private fun createIconTexture(button: ControlBar.Button): Int {
         val resId = when (button) {
             ControlBar.Button.HOME -> R.drawable.ic_apps_rounded
+            ControlBar.Button.SCROLL_TOP -> R.drawable.ic_vertical_align_top
             ControlBar.Button.PORTRAIT -> R.drawable.ic_screen_rotation
             ControlBar.Button.ZOOM -> return 0
         }

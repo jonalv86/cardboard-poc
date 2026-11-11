@@ -19,7 +19,8 @@ object StreamingApps {
         "com.peacocktv.peacockandroid",
         "com.crunchyroll.crunchyroid",
         "com.mubi",
-        "com.google.android.videos"
+        "com.google.android.videos",
+        "ar.com.cablevision.attv.android.myminerva"
     )
 
     /** Si la app de [packageName] protege sus videos con DRM. */

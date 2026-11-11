@@ -26,6 +26,8 @@
 - [Apps recientes en el panel](#recientes)
 - [Modo fluido guiado desde Ajustes](#modo-fluido-guiado)
 - [Zoom de la pantalla](#zoom)
+- [Disney+, Max y Flow en el visor](#disney-max-flow)
+- [Barra y bordes: "Ir arriba" y arrastre que acelera](#ir-arriba)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -1789,12 +1791,175 @@ quieta al girar, el suavizado y la voz (4 de 4).
 
 ### Limitaciones conocidas
 
-- **Con Disney+ el zoom no funciona.** Con Netflix sí. Queda para un issue aparte.
+- **Disney+ y Max se veían en negro**, con zoom o sin él: los clones no se activaban. No era un problema
+  del zoom; se resolvió en el issue #48 (ver "Disney+, Max y Flow en el visor").
 - **No se probaron con el visor puesto** el arrastre con zoom, las apps con DRM girando la cabeza (los
   clones se reubican en cada movimiento), el modo normal y el cursor solo con joystick.
 - **No se evaluó el mareo** en sesiones largas: quien se maree, saca el zoom.
 - **Después de reinstalar la app, a veces el servicio de accesibilidad queda activado pero sin
   conectar**, e Iniciar lleva a Ajustes de Accesibilidad. Se arregla apagándolo y prendiéndolo.
+
+---
+
+<a id="disney-max-flow"></a>
+## Disney+, Max y Flow en el visor
+
+Issue #48. **Fecha:** 11 de noviembre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B,
+Android 16).
+
+En modo fluido, Disney+, Max y Flow quedaban en negro en el visor, mientras que Netflix y Prime Video se
+veían. Eran dos problemas distintos: los clones no se prendían, y una vez prendidos, el gatillo no tocaba
+el reproductor de Disney+.
+
+### Por qué no se prendían los clones
+
+El issue suponía que el detector no podía leer las ventanas de esas apps, o que toda su ventana tenía
+`FLAG_SECURE`. No era ninguna de las dos: la accesibilidad devuelve su paquete sin problema, y ni el menú
+de Disney+ ni el reproductor de Max tienen `FLAG_SECURE`. En Max, lo negro era solo el video protegido.
+
+La causa estaba en el panel. Desde el issue #35 cada app se abre en multiventana, y una tarea en
+multiventana no tapa a la tarea del panel, que está a pantalla completa, aunque ocupe toda la pantalla.
+El panel sigue visible y en primer plano debajo de la app, sin pasar por `onPause`. `FrontAppDetector`
+preguntaba primero si el panel estaba en primer plano (`PanelActivity.isInFront`, que seguía a `onResume`
+y `onPause`). Como eso quedaba trabado en verdadero, el detector informaba "sin app" en cada revisión.
+Netflix y Prime Video no fallaban porque declaran que no se pueden redimensionar
+(`RESIZE_MODE_UNRESIZEABLE`): el sistema las abre a pantalla completa, y ahí el panel sí se pausa.
+
+Ahora el detector decide por el orden de las ventanas. La app al frente es la ventana de app de más arriba
+en la pantalla virtual, y si esa ventana es de CeluVR, lo que está al frente es el panel. `isInFront` se
+quitó, y la barra elige sus botones según la app que informa el detector. De paso volvió el botón
+Vertical con las apps en multiventana: antes, con el panel trabado, la barra mostraba los botones del
+panel.
+
+Flow (`ar.com.cablevision.attv.android.myminerva`) no estaba en `StreamingApps` y se sumó.
+
+### Por qué no andaba tocar en el reproductor de Disney+
+
+Con los clones prendidos, el video de Disney+ se veía, pero el gatillo no hacía nada: no se podía pausar
+ni adelantar. El menú respondía; el reproductor no. La ventana del reproductor sí tiene `FLAG_SECURE`, y
+el log del sistema decía por qué:
+
+```
+Dropping MOTION event targeting ... LandscapePlaybackActivity as requested by the input configuration {DROP_INPUT | SENSITIVE_FOR_PRIVACY} on display 91.
+```
+
+Android descarta todo toque dirigido a una ventana segura que está en una pantalla no segura, venga de un
+gesto de accesibilidad o de `adb shell input`. La pantalla virtual no es segura, y no se puede crear una
+segura: el sistema pide `CAPTURE_SECURE_VIDEO_OUTPUT`, un permiso que shell no tiene (ver "Video con
+DRM").
+
+Lo que funcionó es tocar sobre los clones. El sistema les da a los clones ventanas de input que apuntan a
+la ventana original, y como están en la pantalla física, que es segura, el toque llega. Ahora, mientras
+los clones están a la vista, `VirtualFinger` inyecta el gesto entero sobre el clon del ojo izquierdo. Usa
+la escala, el recorte y la posición con que está ubicado el clon, zoom incluido, y hace ahí la cuenta de
+si el dedo cambió de píxel. Así funcionan el gatillo, el arrastre, el avance por borde y la voz. Las
+ventanas del visor que quedan encima del clon no reciben toques, y la X queda fuera de la imagen.
+
+El costo es la precisión: sin zoom el clon está achicado a un tercio, así que cada píxel de la pantalla
+física equivale a unos tres de la app. Para tocar botones alcanza, y con zoom mejora.
+
+### El control que dejó de responder
+
+En medio de la prueba, el VR BOX dejó de mover el cursor. Con `getevent` no llegaba nada del control, ni
+siquiera los reinicios que aparecen al cambiar de modo, aunque Bluetooth lo daba por conectado. Volver a
+conectarlo lo arregló. No tenía que ver con CeluVR. `getevent` sin terminal guarda su salida en un buffer
+y la pierde si se lo corta: hay que lanzarlo con `adb shell -tt`.
+
+### Cómo se probó
+
+Por USB, sin el visor puesto, como en "Zoom de la pantalla". La ventana segura sale negra en
+`screencap`, así que los controles del reproductor se miraron en la jerarquía de vistas
+(`dumpsys activity <paquete>/<actividad>`) y el efecto de los toques en la sesión de medios
+(`dumpsys media_session`: dos toques al centro la pasan de `PLAYING` a `PAUSED`). Un atajo de debug
+nuevo, `debug.CLONES` con `--ez forzar true`, prende los clones con cualquier app al frente.
+
+- Disney+, Max (menú y reproductor), Flow, Netflix y Prime Video: los clones se prenden al abrirlas y se
+  apagan al volver al panel.
+- Max: el botón Inicio de la barra vuelve al panel con el reproductor al frente.
+- Disney+: el gatillo abre el reproductor desde el menú, y en el reproductor pausa y reanuda, con zoom 1×
+  y 2×.
+- Netflix: los toques y el avance por borde llegan por el clon, sin arrastres cancelados.
+- Chrome en multiventana: la barra vuelve a tener el botón Vertical.
+
+Con el visor puesto se vio Disney+, la interfaz y el video.
+
+### Limitaciones conocidas
+
+- **No se probaron con el visor puesto** el toque en el reproductor de Disney+, arrastrar la barra de
+  progreso, Atrás del control en Max ni el zoom en estas apps.
+- **Sin zoom, los toques sobre las apps con DRM tienen un tercio de la precisión** habitual.
+- Paramount+, Crunchyroll y Google TV siguen sin probar.
+
+---
+
+<a id="ir-arriba"></a>
+## Barra y bordes: "Ir arriba" y arrastre que acelera
+
+Issues #26 y #31, PR #49. **Fecha:** 11 de noviembre de 2026. **Equipo de prueba:** el mismo Samsung
+(SM-S938B, Android 16).
+
+El PR #49 traía dos issues: un arrastre que acelera al empujar contra el borde (#26) y un botón "Ir
+arriba" en la barra, que además oculta Inicio cuando el panel está abierto (#31). Al mergearlo con la
+rama del #48 se vio que el #31 no estaba y que el panel había vuelto atrás en tres cosas.
+
+### Qué se perdió y por qué
+
+El botón del #31 se había hecho en un commit de la rama del PR. Después esa rama trajo los cambios de
+master, y al resolver los conflictos quedó la versión de master de la barra, de `JoystickManager` y de
+`OverlayUi`: el botón, su acción y el ícono desaparecieron, y quedaron dos `scrollToTop()` que nadie
+llamaba. El ícono `ic_vertical_align_top` tampoco había llegado a ningún commit.
+
+El mismo PR reemplazó `PanelActivity` por una versión anterior. Se perdieron tres cosas, que se
+restauraron:
+
+- **La multiventana del #35.** Las apps volvían a abrirse dentro de la tarea del panel, a pantalla
+  completa con su propio tamaño: Disney+ se veía como una columna angosta en el medio.
+- **Las recientes de la sesión.** Volvía `RecentAppsProvider`, que pide el permiso de estadísticas de
+  uso, el que en el #44 se vio que no se puede otorgar.
+- **La lista única.** RECIENTES volvía a ser una grilla fija arriba, tan baja que cortaba el nombre de la
+  app.
+
+### "Ir arriba" (#31)
+
+La barra suma el botón **Ir arriba** (`ControlBar.Button.SCROLL_TOP`), con una flecha que sube hasta una
+barra, dibujada para el proyecto. El orden queda Inicio, Ir arriba, Vertical y Zoom; con el panel al
+frente, Ir arriba y Zoom.
+
+- **En el panel** lleva la lista al tope (`scrollToItem(0)`).
+- **En otra app** busca la lista desplazable de mayor área en la ventana activa y la hace retroceder de a
+  una página (`ACTION_SCROLL_BACKWARD`) mientras la lista diga que puede subir, hasta 25 páginas para que
+  un feed infinito no lo trabe. Corre en otro hilo, para no frenar el cursor. La primera versión mandaba
+  los pedidos seguidos y subía poco más de una página: cada pedido arranca una animación que corta la
+  anterior. Ahora espera 250 ms entre página y página.
+
+Para ocultar Inicio hace falta saber si el panel está al frente, y la forma vieja (`isInFront`, que seguía
+la pausa del panel) fallaba con las apps en multiventana (ver "Disney+, Max y Flow en el visor"). Ahora
+`JoystickManager.panelInFront` lo actualizan en el acto la reanudación y la pausa del panel, y en la
+pantalla virtual lo corrige el detector de la app al frente por el orden de las ventanas.
+
+### Arrastre que acelera contra el borde (#26)
+
+Esto sí llegó con el PR. Con el gatillo apretado sobre un borde, el avance arranca enseguida, acelera
+mientras se empuja contra el borde con el stick o con la cabeza, y frena de a poco al dejar de empujar.
+Falta un criterio del issue: no hay ningún estado visual en la retícula mientras acelera o frena.
+
+### Cómo se probó
+
+Por USB, con el visor andando. La barra se miró en capturas de la pantalla física, y "Ir arriba", en
+capturas de la pantalla virtual antes y después de tocarlo.
+
+- Con el panel al frente, la barra muestra Ir arriba y Zoom; con una app, los cuatro botones.
+- En el panel, con la lista desplazada hasta la "C", "Ir arriba" la vuelve al principio.
+- En Ajustes del sistema, desde el final de la lista vuelve al principio en 4 páginas y frena solo.
+- Con la multiventana restaurada, Disney+ ocupa toda la pantalla, se prenden los clones y el gatillo
+  pausa el reproductor.
+
+### Limitaciones conocidas
+
+- **No se probó con el control real**, ni en Chrome, Instagram o YouTube. En Chrome las acciones de
+  accesibilidad pueden devolver que funcionaron sin hacer nada (ver "Fase 3").
+- **El arrastre que acelera (#26) no se probó**: por adb no se puede mantener el gatillo apretado.
+- **Falta el estado visual del #26** en la retícula.
 
 ---
 
@@ -1978,10 +2143,16 @@ libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` 
       iniciar.
 - [x] **Zoom de la pantalla** (issue #36): botón en la barra, "acercar" y "alejar" por voz, zoom al
       iniciar y suavizado en Ajustes, también con las apps con DRM (ver "Zoom de la pantalla").
+- [x] **Disney+, Max y Flow en el visor** (issue #48): se ven, y el gatillo toca el reproductor de Disney+
+      a través de los clones (ver "Disney+, Max y Flow en el visor").
+- [x] **"Ir arriba" en la barra e Inicio oculto con el panel al frente** (issue #31), y **arrastre que
+      acelera contra el borde** (issue #26), salvo su estado visual en la retícula.
 
 **Lo que sigue ahora:**
 
-- [ ] Zoom con Disney+ (issue aparte).
+- [ ] Mostrar en la retícula cuándo el arrastre contra el borde acelera o frena (lo que falta del #26).
+- [ ] Probar con el control "Ir arriba" en Chrome, Instagram y YouTube, y el arrastre que acelera.
+
 - [ ] Probar los comandos de voz en un celular con Android 13 o anterior.
 
 - [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al

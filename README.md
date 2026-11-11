@@ -87,6 +87,19 @@ rompen. Las versiones fijadas hoy —Gradle 8.9, plugin 8.7.3— son las que est
 Desde el panel del visor se abren las apps; arriba, en **RECIENTES**, quedan las que abriste en la sesión.
 Para detener la captura, usá la **X** del visor o la notificación: CeluVR vuelve a su pantalla principal.
 
+### La barra y los bordes
+
+Al llevar el cursor al borde de abajo aparece la **barra del visor**, con estos botones:
+
+- **Inicio** vuelve al panel. No aparece cuando el panel ya está al frente.
+- **Ir arriba** lleva al principio del contenido: el tope del panel, o el principio de la lista principal
+  de la app que estás usando.
+- **Vertical** pasa la app a vertical y la devuelve a horizontal (solo en modo fluido).
+- **La lupa** cambia el zoom (ver abajo).
+
+Dejar el cursor quieto contra un borde hace avanzar la pantalla hacia ese lado. Con el gatillo apretado
+el arrastre sigue apenas empujás contra el borde y se va acelerando; al dejar de empujar frena de a poco.
+
 ### Ajustes
 
 El engranaje de la pantalla principal abre **Ajustes**: el giroscopio (activarlo, sensibilidad y
@@ -156,9 +169,10 @@ por qué y ofrece seguir en modo normal.
 
 En modo fluido, además:
 
-- **Netflix y otras apps con DRM** muestran el video: el visor usa una copia de la pantalla que compone el
-  sistema. Esa vista no tiene corrección de lente: a través del visor, la imagen se ve algo deformada hacia
-  los bordes.
+- **Netflix, Disney+, Max, Flow y otras apps con DRM** muestran el video: el visor usa una copia de la
+  pantalla que compone el sistema. Esa vista no tiene corrección de lente: a través del visor, la imagen se
+  ve algo deformada hacia los bordes. Los toques se hacen sobre esa copia, y sin zoom son algo menos
+  precisos.
 - El botón **Vertical** de la barra del visor pasa la app a vertical y la devuelve a horizontal. Las apps
   que solo funcionan en vertical igual llenan la pantalla horizontal.
 
@@ -205,7 +219,6 @@ sensor lee bien.
   sistema operativo, no un error nuestro. En modo fluido se ven, pero sin corrección de lente.
 - **El botón Vertical solo existe en modo fluido.** En modo normal la orientación la fija la pantalla del
   celular.
-- **Con Disney+ el zoom no funciona.** Con Netflix y las otras apps con DRM sí.
 - **El resaltado del setup del modo fluido usa los textos de Ajustes de AOSP y One UI.** En celulares de
   otras marcas puede no encontrar la opción a tocar; el teclado del código funciona igual.
 - **La corrección de las lentes es aproximada.** Se usan los valores del Cardboard original de
@@ -272,4 +285,5 @@ visor de VR propio del proyecto.
 
 Los íconos de la barra del visor (`app/src/main/res/drawable/ic_*_rounded.xml`) son
 [Material Symbols](https://github.com/google/material-design-icons) estilo Rounded, de Google,
-licencia Apache 2.0. La lupa del botón de zoom (`ic_zoom.xml`) es propia del proyecto.
+licencia Apache 2.0. La lupa del botón de zoom (`ic_zoom.xml`) y la flecha de "Ir arriba"
+(`ic_vertical_align_top.xml`) son propias del proyecto.

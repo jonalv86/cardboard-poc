@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.graphics.PointF
+import android.graphics.Rect
 import android.os.Build
 import androidx.core.content.ContextCompat
 import android.view.KeyEvent
@@ -61,6 +62,19 @@ class JoystickAccessibilityService : AccessibilityService() {
         const val EXTRA_DEBUG_CURSOR_X = "x"
         const val EXTRA_DEBUG_CURSOR_Y = "y"
         const val EXTRA_DEBUG_CURSOR_CLICK = "tocar"
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: con [EXTRA_DEBUG_CLONES_FORCE] en
+         * true los clones se prenden con cualquier app al frente; en false vuelven a depender de la app.
+         */
+        const val ACTION_DEBUG_CLONES = "com.pps.cardboardpoc.debug.CLONES"
+        const val EXTRA_DEBUG_CLONES_FORCE = "forzar"
+
+        /** Hasta cuántas páginas retrocede "Ir arriba" en una app: en un feed infinito no termina nunca. */
+        private const val SCROLL_TOP_MAX_PAGES = 25
+
+        /** Cuánto se espera a que termine de moverse cada página de "Ir arriba". */
+        private const val SCROLL_TOP_PAGE_MS = 250L
     }
 
     private val pressFinger = VirtualFinger(this, "gatillo")
@@ -117,6 +131,14 @@ class JoystickAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val debugClonesReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            ScreenCaptureService.debugMirrorForced =
+                intent.getBooleanExtra(EXTRA_DEBUG_CLONES_FORCE, false)
+            Log.d(TAG, "Clones por adb: forzados=${ScreenCaptureService.debugMirrorForced}")
+        }
+    }
+
     /**
      * Vincula el servicio activo al JoystickManager al momento de la conexión para permitir
      * el despacho de comandos de entrada.
@@ -138,6 +160,10 @@ class JoystickAccessibilityService : AccessibilityService() {
             )
             ContextCompat.registerReceiver(
                 this, debugCursorReceiver, IntentFilter(ACTION_DEBUG_CURSOR),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            ContextCompat.registerReceiver(
+                this, debugClonesReceiver, IntentFilter(ACTION_DEBUG_CLONES),
                 ContextCompat.RECEIVER_EXPORTED
             )
         }
@@ -181,6 +207,7 @@ class JoystickAccessibilityService : AccessibilityService() {
             unregisterReceiver(debugEdgeScrollReceiver)
             unregisterReceiver(debugZoomReceiver)
             unregisterReceiver(debugCursorReceiver)
+            unregisterReceiver(debugClonesReceiver)
         }
         if (ScreenCaptureService.isCapturing) {
             startService(ScreenCaptureService.stopIntent(this))
@@ -293,31 +320,55 @@ class JoystickAccessibilityService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
-    /** Desplaza la vista activa al principio del contenido (tope). */
-    @Suppress("unused")
+    /**
+     * Lleva al principio la lista más grande de la ventana activa: la hace retroceder de a una página
+     * mientras la lista diga que puede subir, hasta [SCROLL_TOP_MAX_PAGES] páginas. Sin lista
+     * desplazable no hace nada. Corre en otro hilo: recorrer el árbol y cada retroceso son pedidos a la
+     * app, y entre página y página hay que esperar.
+     */
     fun scrollToTop() {
-        val root = rootInActiveWindow ?: return
-        val scrollableNode = findScrollableNode(root)
-        if (scrollableNode != null) {
-            var scrolled = true
-            var count = 0
-            while (scrolled && count < 25) {
-                scrolled = scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                count++
+        Thread({
+            val root = rootInActiveWindow ?: return@Thread
+            val list = largestScrollable(root)
+            if (list == null) {
+                Log.d(TAG, "Ir arriba: la ventana activa no tiene lista desplazable")
+                return@Thread
             }
-        }
+            var pages = 0
+            while (pages < SCROLL_TOP_MAX_PAGES && list.refresh() && list.canScrollBackward() &&
+                list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            ) {
+                pages++
+                // Cada retroceso anima el desplazamiento, y pedir el siguiente antes de que termine
+                // corta la animación: sin la espera, 25 pedidos seguidos suben poco más de una página.
+                Thread.sleep(SCROLL_TOP_PAGE_MS)
+            }
+            Log.d(TAG, "Ir arriba: ${list.className} retrocedió $pages páginas")
+        }, "IrArriba").start()
     }
 
-    private fun findScrollableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.isScrollable) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            val found = findScrollableNode(child)
-            if (found != null) {
-                return found
+    /** Si la lista todavía puede subir: la acción de retroceder solo figura mientras se puede. */
+    private fun AccessibilityNodeInfo.canScrollBackward(): Boolean =
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD in actionList
+
+    /** Nodo desplazable de mayor área en pantalla dentro de [root], o null si no hay ninguno. */
+    private fun largestScrollable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var largest: AccessibilityNodeInfo? = null
+        var largestArea = 0
+        val bounds = Rect()
+        val pending = ArrayDeque<AccessibilityNodeInfo>().apply { add(root) }
+        while (pending.isNotEmpty()) {
+            val node = pending.removeFirst()
+            if (node.isScrollable) {
+                node.getBoundsInScreen(bounds)
+                val area = bounds.width() * bounds.height()
+                if (area > largestArea) {
+                    largest = node
+                    largestArea = area
+                }
             }
+            for (i in 0 until node.childCount) node.getChild(i)?.let(pending::add)
         }
-        return null
+        return largest
     }
 }
