@@ -43,6 +43,9 @@ class EdgeScroller(service: AccessibilityService) {
     private var progress = 0f
     private var lastProgressMs = 0L
 
+    private var isPushing = true
+    private var currentSpeed = 0f
+
     /** Arranca el avance hacia el borde indicado (-1, 0 o 1 por eje). */
     fun start(dirX: Int, dirY: Int) {
         handler.post {
@@ -50,9 +53,17 @@ class EdgeScroller(service: AccessibilityService) {
             this.dirY = dirY
             active = true
             scrollStartMs = SystemClock.uptimeMillis()
-            Log.d(TAG, "avance hacia ($dirX, $dirY)")
+            isPushing = true
+            Log.d(TAG, "avance hacia ($dirX, $dirY), speed=$currentSpeed")
             // Si el dedo todavía se está levantando del swipe anterior, su onUp agenda el siguiente.
             if (!finger.isDown) startSwipe()
+        }
+    }
+
+    /** Actualiza si se está empujando contra el borde para acelerar o desacelerar suavemente. */
+    fun setPushing(pushing: Boolean) {
+        handler.post {
+            isPushing = pushing
         }
     }
 
@@ -61,6 +72,7 @@ class EdgeScroller(service: AccessibilityService) {
         handler.post {
             if (active) {
                 active = false
+                currentSpeed = 0f
                 handler.removeCallbacks(nextSwipe)
                 Log.d(TAG, "avance detenido")
                 finger.poke()
@@ -77,7 +89,7 @@ class EdgeScroller(service: AccessibilityService) {
         if (!active || finger.isDown) return
         val width = JoystickManager.screenWidth.toFloat()
         val height = JoystickManager.screenHeight.toFloat()
-        if (width == 0f || height == 0f) return
+        if ((width == 0f) || (height == 0f)) return
 
         if (dirY != 0) {
             fromX = JoystickManager.cursorX.coerceIn(width * CROSS_MARGIN, width * (1 - CROSS_MARGIN))
@@ -94,44 +106,50 @@ class EdgeScroller(service: AccessibilityService) {
         // frena el desplazamiento que dejó el swipe anterior, y si se quedara quieto hasta el tramo
         // siguiente la pantalla se detendría unos cuadros.
         val now = SystemClock.uptimeMillis()
-        progress = progressPerMs(now) * VirtualFinger.SEGMENT_MIN_MS
+        progress = progressPerMs() * VirtualFinger.SEGMENT_MIN_MS
         lastProgressMs = now + VirtualFinger.SEGMENT_MIN_MS
         finger.down(
             fromX, fromY,
             settleMs = { if (active) 0L else SETTLE_MS },
             target = ::currentTarget,
-            keepDown = { active && progress < 1f },
+            keepDown = { active && (progress < 1f) },
             // Volver a apoyar el dedo en el mismo instante en que el sistema da por levantado el anterior
             // hace que a veces cancele el gesto nuevo; una pausa corta lo evita, como con un dedo real.
             // Si igual se cancela, se reintenta mientras el avance siga activo.
             onUp = { if (active) handler.postDelayed(nextSwipe, REGRAB_DELAY_MS) },
-            firstTo = pointAt(progress)
+            firstTo = pointAt(progress),
         )
     }
 
     /**
      * Fracción del swipe que se recorre por ms, según lo que lleva el avance: la velocidad arranca en
-     * [MIN_SCREENS_PER_SECOND] y llega a [MAX_SCREENS_PER_SECOND] tras [ACCELERATION_MS].
+     * [MIN_SCREENS_PER_SECOND] y llega a [MAX_SCREENS_PER_SECOND] según [currentSpeed].
      */
-    private fun progressPerMs(now: Long): Float {
-        val ramp = ((now - scrollStartMs) / ACCELERATION_MS.toFloat()).coerceIn(0f, 1f)
+    private fun progressPerMs(): Float {
         val screensPerSecond =
-            MIN_SCREENS_PER_SECOND + (MAX_SCREENS_PER_SECOND - MIN_SCREENS_PER_SECOND) * ramp
+            MIN_SCREENS_PER_SECOND + (MAX_SCREENS_PER_SECOND - MIN_SCREENS_PER_SECOND) * currentSpeed
         return screensPerSecond / 1000f / (BAND_END - BAND_START)
     }
 
     /**
      * Avanza el swipe en curso según el tiempo transcurrido y devuelve dónde tiene que estar el dedo.
-     * El último tramo puede pasarse un poco del final de la franja: si se cortara justo ahí, recorrería
-     * lo poco que falta en todo lo que dura el tramo, el dedo llegaría casi frenado y la app no seguiría
-     * desplazándose sola mientras el dedo vuelve a apoyarse.
      */
     private fun currentTarget(): PointF {
         if (active) {
             val now = SystemClock.uptimeMillis()
-            if (now > lastProgressMs) {
-                progress = (progress + progressPerMs(now) * (now - lastProgressMs))
-                    .coerceAtMost(MAX_PROGRESS)
+            val elapsed = if (lastProgressMs == 0L) 0L else (now - lastProgressMs).coerceAtMost(100L)
+            if (elapsed > 0) {
+                val speedDelta = (if (isPushing) 1f / ACCELERATION_MS else -1f / DECELERATION_MS) * elapsed
+                currentSpeed = (currentSpeed + speedDelta).coerceIn(0f, 1f)
+
+                if (!isPushing && currentSpeed <= 0f) {
+                    active = false
+                    Log.d(TAG, "avance detenido por desaceleración")
+                    finger.poke()
+                    return pointAt(progress)
+                }
+
+                progress = (progress + progressPerMs() * elapsed).coerceAtMost(MAX_PROGRESS)
                 lastProgressMs = now
             }
         }
@@ -162,7 +180,8 @@ class EdgeScroller(service: AccessibilityService) {
         const val MAX_SCREENS_PER_SECOND = 1.5f
 
         /** Cuánto tarda el avance en pasar de la velocidad mínima a la máxima, en ms. */
-        const val ACCELERATION_MS = 3000L
+        const val ACCELERATION_MS = 1500L
+        const val DECELERATION_MS = 1000L
 
         /**
          * Tiempo quieto antes de levantar el dedo al detener el avance. La app calcula la velocidad del
