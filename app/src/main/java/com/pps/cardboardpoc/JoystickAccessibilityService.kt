@@ -14,6 +14,7 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 
 /**
  * Servicio de Accesibilidad responsable de interceptar eventos de hardware (Joystick Bluetooth)
@@ -274,6 +275,11 @@ class JoystickAccessibilityService : AccessibilityService() {
         edgeScroller.start(dirX, dirY)
     }
 
+    /** Actualiza si se está empujando contra el borde para acelerar o desacelerar el avance. */
+    fun setEdgeScrollPushing(pushing: Boolean) {
+        edgeScroller.setPushing(pushing)
+    }
+
     /** Detiene el avance arrancado con [startEdgeScroll]. */
     fun stopEdgeScroll() {
         edgeScroller.stop()
@@ -285,5 +291,33 @@ class JoystickAccessibilityService : AccessibilityService() {
      */
     fun performBackAction() {
         performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    /** Desplaza la vista activa al principio del contenido (tope). */
+    @Suppress("unused")
+    fun scrollToTop() {
+        val root = rootInActiveWindow ?: return
+        val scrollableNode = findScrollableNode(root)
+        if (scrollableNode != null) {
+            var scrolled = true
+            var count = 0
+            while (scrolled && count < 25) {
+                scrolled = scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                count++
+            }
+        }
+    }
+
+    private fun findScrollableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        if (node.isScrollable) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            val found = findScrollableNode(child)
+            if (found != null) {
+                return found
+            }
+        }
+        return null
     }
 }

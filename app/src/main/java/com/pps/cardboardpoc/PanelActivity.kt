@@ -5,8 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ResolveInfo
-import android.graphics.Rect
-import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -14,21 +12,18 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
-import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,11 +47,9 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.pps.cardboardpoc.ui.theme.CeluVRTheme
-import com.pps.cardboardpoc.vdisplay.MultiWindowTasks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 /**
  * Panel de apps del visor: lista todas las apps lanzables, con una sección propia arriba para las
@@ -66,9 +59,17 @@ class PanelActivity : ComponentActivity() {
 
     private val apps = mutableStateOf<List<LaunchableApp>>(emptyList())
     private val recentComponents = mutableStateOf<List<ComponentName>>(emptyList())
+    private val gridState = LazyGridState()
+
+    fun scrollToTop() {
+        lifecycleScope.launch {
+            gridState.scrollToItem(0)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        instance = this
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = Unit
         })
@@ -83,7 +84,8 @@ class PanelActivity : ComponentActivity() {
                     AppPanel(
                         apps = apps.value,
                         recentComponents = recentComponents.value,
-                        onAppClick = { launch(it.component) }
+                        onAppClick = { launch(it.component) },
+                        gridState = gridState
                     )
                 }
             }
@@ -98,6 +100,11 @@ class PanelActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) pendingLaunch = null
+    }
+
+    override fun onDestroy() {
+        if (instance == this) instance = null
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -115,7 +122,9 @@ class PanelActivity : ComponentActivity() {
         openRequestedPackage()
         lifecycleScope.launch {
             apps.value = withContext(Dispatchers.Default) { loadApps() }
-            recentComponents.value = SessionApps.getRecent()
+            recentComponents.value = withContext(Dispatchers.Default) {
+                RecentAppsProvider.getRecentApps(applicationContext, packageManager)
+            }
         }
         window.decorView.postDelayed(::warnIfPanelNotCaptured, CAPTURE_CHECK_DELAY_MS)
     }
@@ -152,48 +161,22 @@ class PanelActivity : ComponentActivity() {
             .sortedBy { it.label.lowercase() }
     }
 
-    /**
-     * Abre [component]. En la pantalla virtual cada app va en su propia tarea, en modo multiventana; con
-     * la proyección se abre dentro de la tarea de CeluVR, que es la que se captura, salvo las que se
-     * cierran solas ahí.
-     */
     private fun launch(component: ComponentName) {
-        val virtual = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            JoystickManager.targetDisplayId != Display.DEFAULT_DISPLAY
-        val ownTask = virtual || SessionApps.needsOwnTask(component)
+        val ownTask = SessionApps.needsOwnTask(component)
         val flags = if (ownTask) Intent.FLAG_ACTIVITY_NEW_TASK else Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
         val intent = Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
             .setComponent(component)
             .addFlags(flags)
         try {
-            startActivity(intent, if (virtual) multiWindowOptions() else null)
+            startActivity(intent)
             SessionApps.markUsed(component)
-            recentComponents.value = SessionApps.getRecent()
+            recentComponents.value = RecentAppsProvider.getRecentApps(applicationContext, packageManager)
             pendingLaunch = if (ownTask) null else PendingLaunch(component, SystemClock.uptimeMillis())
             Log.d(TAG, "panel: abre ${component.flattenToShortString()} tareaPropia=$ownTask")
         } catch (e: Exception) {
             Log.w(TAG, "panel: no se pudo abrir ${component.flattenToShortString()}", e)
         }
-    }
-
-    /**
-     * Opciones para abrir una app en modo multiventana ocupando toda la pantalla virtual. Ver
-     * [MultiWindowTasks]. Si el sistema no acepta el modo, la app se abre como siempre.
-     */
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun multiWindowOptions(): Bundle {
-        val options = ActivityOptions.makeBasic()
-            .setLaunchBounds(Rect(0, 0, JoystickManager.screenWidth, JoystickManager.screenHeight))
-        try {
-            HiddenApiBypass.invoke(
-                ActivityOptions::class.java, options, "setLaunchWindowingMode",
-                MultiWindowTasks.WINDOWING_MODE_MULTI_WINDOW
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "panel: no se pudo pedir el modo multiventana", e)
-        }
-        return options.toBundle()
     }
 
     private fun reopenIfClosedOnLaunch() {
@@ -213,6 +196,12 @@ class PanelActivity : ComponentActivity() {
         private var pendingLaunch: PendingLaunch? = null
         private const val SELF_CLOSE_WINDOW_MS = 1500L
         private const val CAPTURE_CHECK_DELAY_MS = 500L
+
+        private var instance: PanelActivity? = null
+
+        fun scrollToTop() {
+            instance?.scrollToTop()
+        }
 
         @Volatile
         var isInFront = false
@@ -251,51 +240,54 @@ class LaunchableApp(
 private fun AppPanel(
     apps: List<LaunchableApp>,
     recentComponents: List<ComponentName>,
-    onAppClick: (LaunchableApp) -> Unit
+    onAppClick: (LaunchableApp) -> Unit,
+    gridState: LazyGridState
 ) {
     val recentApps = recentComponents.mapNotNull { comp -> apps.find { it.component == comp } }
-    val gridState = rememberLazyGridState()
-    // Los recientes llegan después que el resto y la grilla deja fijo el primer elemento visible:
-    // sin volver al principio, quedarían arriba, fuera de la vista.
-    LaunchedEffect(recentApps.map { it.component }) {
-        gridState.scrollToItem(0)
-    }
 
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Adaptive(minSize = 120.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 24.dp, bottom = 24.dp),
-        modifier = Modifier.fillMaxSize()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 48.dp, end = 48.dp, top = 24.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         if (recentApps.isNotEmpty()) {
-            item(key = "recent_title", span = { GridItemSpan(maxLineSpan) }) {
-                SectionTitle("RECIENTES", first = true)
+            Text(
+                text = "RECIENTES",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 120.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(0.35f, fill = false)
+            ) {
+                items(recentApps, key = { "recent_${it.component.flattenToString()}" }) { app ->
+                    AppTile(app = app, onClick = { onAppClick(app) })
+                }
             }
-            items(recentApps, key = { "recent_${it.component.flattenToString()}" }) { app ->
+        }
+
+        Text(
+            text = "TODAS LAS APLICACIONES",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold
+        )
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Adaptive(minSize = 120.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            items(apps, key = { "all_${it.component.flattenToString()}" }) { app ->
                 AppTile(app = app, onClick = { onAppClick(app) })
             }
         }
-        item(key = "all_title", span = { GridItemSpan(maxLineSpan) }) {
-            SectionTitle("TODAS LAS APLICACIONES", first = recentApps.isEmpty())
-        }
-        items(apps, key = { "all_${it.component.flattenToString()}" }) { app ->
-            AppTile(app = app, onClick = { onAppClick(app) })
-        }
     }
-}
-
-/** Título de una sección del panel; separado de la sección de arriba salvo que sea [first]. */
-@Composable
-private fun SectionTitle(text: String, first: Boolean) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(top = if (first) 0.dp else 8.dp, bottom = 8.dp)
-    )
 }
 
 @Composable

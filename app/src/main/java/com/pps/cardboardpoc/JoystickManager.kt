@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.KeyEvent
+import kotlin.math.abs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -53,6 +54,9 @@ object JoystickManager {
     /** Desplazamiento vertical que aporta la cabeza, en píxeles; 0 sin giroscopio. */
     private var headOffsetY = 0f
 
+    private var lastHeadOffsetX = 0f
+    private var lastHeadOffsetY = 0f
+
     /** Cursor y parte de la pantalla que se ve en el visor, tomados en el mismo instante. */
     class Snapshot(
         /** Posición horizontal del cursor, en píxeles de pantalla. */
@@ -62,7 +66,7 @@ object JoystickManager {
         /** Parte de la pantalla que se ve en el visor. */
         val window: ZoomWindow,
         /** Posición horizontal, en píxeles de pantalla, en la que está anclada la [ControlBar]. */
-        val barAnchorX: Float
+        val barAnchorX: Float,
     ) {
         /** Lugar de la [ControlBar] en la vista. */
         val barFrame: ControlBar.Frame get() = ControlBar.frame(window, barAnchorX)
@@ -220,7 +224,7 @@ object JoystickManager {
         accessibilityService?.startEdgeScroll(contact.dirX, contact.dirY)
     }
 
-    private val serviceConnectedState = MutableStateFlow(false)
+    private val serviceConnectedState = MutableStateFlow(value = false)
 
     /** Si el servicio de accesibilidad está conectado. Sin él no hay ventana estéreo ni control. */
     val serviceConnected: StateFlow<Boolean> = serviceConnectedState
@@ -271,7 +275,7 @@ object JoystickManager {
         screenHeight = height
         updateCursor()
         rebuildZoomWindow()
-        Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
+        Log.d(TAG, "Pantalla $width x $height, cursor en ($cursorX, $cursorY)")
         refreshEdgeContact()
     }
 
@@ -285,6 +289,8 @@ object JoystickManager {
     fun setHeadOffset(dx: Float, dy: Float, zoomChange: Int) {
         synchronized(this) {
             if (zoomChange != zoomChangeCount) return
+            lastHeadOffsetX = headOffsetX
+            lastHeadOffsetY = headOffsetY
             headOffsetX = dx
             headOffsetY = dy
             updateCursor()
@@ -348,7 +354,7 @@ object JoystickManager {
     /**
      * Recalcula el cursor, corre la ventana con zoom para seguirlo y decide si la [ControlBar] queda a
      * la vista. La barra está anclada al borde de abajo de la pantalla: con zoom, bajar por la pantalla
-     * la hace avanzar, y la barra aparece recién al llegar abajo de todo.
+     * la hace avanzar, y la barra aparece recién al llegar al borde inferior.
      */
     private fun updateCursor() {
         if (screenWidth == 0 || screenHeight == 0) return
@@ -412,7 +418,7 @@ object JoystickManager {
 
     /**
      * Rehace la ventana visible con el zoom, el encaje y el tamaño de pantalla actuales. Si cambia el
-     * zoom efectivo, el cursor queda donde está, con todo su desplazamiento pasado al joystick, y la
+     * zoom efectivo, el cursor queda donde está, con la totalidad de su desplazamiento pasado al joystick, y la
      * cabeza toma un frente nuevo. Con la [ControlBar] a la vista, el cursor queda sobre el mismo punto
      * de la barra: ella no cambia de tamaño con el zoom, y sin esto el botón de zoom quedaría fuera
      * del cursor después de tocarlo.
@@ -442,9 +448,10 @@ object JoystickManager {
      * no vuelva al centro, con una velocidad proporcional a la inclinación.
      */
     fun setStick(axisX: Float, axisY: Float) {
-        stickX = if (Math.abs(axisX) > DEAD_ZONE) axisX else 0f
-        stickY = if (Math.abs(axisY) > DEAD_ZONE) axisY else 0f
+        stickX = if (abs(axisX) > DEAD_ZONE) axisX else 0f
+        stickY = if (abs(axisY) > DEAD_ZONE) axisY else 0f
         updateMovement()
+        refreshEdgeContact()
     }
 
     /** Registra que una flecha del D-pad se apretó o se soltó. El cursor se mueve mientras siga apretada. */
@@ -456,6 +463,7 @@ object JoystickManager {
             KeyEvent.KEYCODE_DPAD_DOWN -> dpadDown = pressed
         }
         updateMovement()
+        refreshEdgeContact()
     }
 
     /**
@@ -475,11 +483,11 @@ object JoystickManager {
     /**
      * Vuelve a evaluar si el cursor está sobre un borde, según [EdgeZone]. Si se queda ahí
      * [EDGE_DWELL_MS], la pantalla avanza hacia ese lado hasta que el cursor deja el borde. Con el
-     * gatillo apretado no cuenta: llevar el cursor al borde es parte del arrastre. Sin captura tampoco:
+     * gatillo apretado avanza inmediatamente al empujar y acelera/desacelera suavemente. Sin captura tampoco:
      * no hay pantalla estéreo que mirar.
      */
     fun refreshEdgeContact() {
-        val enabled = !pressing && ScreenCaptureService.isCapturing &&
+        val enabled = ScreenCaptureService.isCapturing &&
             screenWidth != 0 && screenHeight != 0
         val current = edgeContact
         val edge = if (enabled) {
@@ -490,6 +498,34 @@ object JoystickManager {
         } else {
             EdgeZone.NONE
         }
+
+        if (edge.isNone) {
+            if (current != null) {
+                handler.removeCallbacks(startEdgeScroll)
+                accessibilityService?.stopEdgeScroll()
+                edgeContact = null
+                Log.d(TAG, "Cursor fuera del borde")
+            }
+            return
+        }
+
+        val now = SystemClock.uptimeMillis()
+        if (pressing) {
+            val pushing = isPushingEdge(edge)
+            accessibilityService?.setEdgeScrollPushing(pushing)
+
+            if (current == null || current.dirX != edge.dirX || current.dirY != edge.dirY) {
+                edgeContact = EdgeContact(edge.dirX, edge.dirY, now - EDGE_DWELL_MS)
+                Log.d(TAG, "Arrastre contra el borde (${edge.dirX}, ${edge.dirY}), pushing=$pushing")
+                accessibilityService?.startEdgeScroll(edge.dirX, edge.dirY)
+            } else {
+                if (pushing) {
+                    accessibilityService?.startEdgeScroll(edge.dirX, edge.dirY)
+                }
+            }
+            return
+        }
+
         if (current != null && current.dirX == edge.dirX && current.dirY == edge.dirY) return
         if (current == null && edge.isNone) return
 
@@ -500,9 +536,19 @@ object JoystickManager {
             Log.d(TAG, "Cursor fuera del borde")
             return
         }
-        edgeContact = EdgeContact(edge.dirX, edge.dirY, SystemClock.uptimeMillis())
+        edgeContact = EdgeContact(edge.dirX, edge.dirY, now)
         Log.d(TAG, "Cursor en el borde (${edge.dirX}, ${edge.dirY})")
         handler.postDelayed(startEdgeScroll, EDGE_DWELL_MS)
+    }
+
+    private fun isPushingEdge(edge: EdgeZone.Edge): Boolean {
+        val dx = directionX()
+        val dy = directionY()
+        val pushingX = edge.dirX != 0 && dx * edge.dirX > 0f
+        val pushingY = edge.dirY != 0 && dy * edge.dirY > 0f
+        val pushingHeadX = edge.dirX != 0 && (headOffsetX - lastHeadOffsetX) * edge.dirX > 0f
+        val pushingHeadY = edge.dirY != 0 && (headOffsetY - lastHeadOffsetY) * edge.dirY > 0f
+        return pushingX || pushingY || pushingHeadX || pushingHeadY
     }
 
     private fun directionX(): Float =
@@ -516,7 +562,7 @@ object JoystickManager {
      * movimiento conserva la velocidad alcanzada; el tick se detiene solo cuando no queda ninguna.
      */
     private fun updateMovement() {
-        if (moving || (directionX() == 0f && directionY() == 0f)) return
+        if (moving || ((directionX() == 0f) && (directionY() == 0f))) return
         moving = true
         moveStartMs = SystemClock.uptimeMillis()
         lastTickMs = moveStartMs
