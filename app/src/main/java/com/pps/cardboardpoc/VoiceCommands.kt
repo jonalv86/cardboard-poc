@@ -22,7 +22,8 @@ import java.io.IOException
 
 /**
  * Escucha el micrófono durante la sesión y traduce "tocar", "agarrar", "soltar", "centrar" y "volver"
- * en acciones del cursor. Una frase cuenta como comando solo si es esa palabra sola.
+ * en acciones del cursor, y "acercar" y "alejar" en cambios de zoom. Una frase cuenta como comando solo
+ * si es esa palabra sola.
  */
 class VoiceCommands(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
@@ -141,11 +142,13 @@ class VoiceCommands(private val context: Context) {
                 Command.RELEASE -> JoystickManager.voiceRelease()
                 Command.CENTER -> JoystickManager.recenter()
                 Command.BACK -> JoystickManager.performBack()
+                Command.ZOOM_IN -> JoystickManager.setZoom(ZoomLevels.higher(JoystickManager.zoomLevel))
+                Command.ZOOM_OUT -> JoystickManager.setZoom(ZoomLevels.lower(JoystickManager.zoomLevel))
             }
         }
     }
 
-    enum class Command { CLICK, GRAB, RELEASE, CENTER, BACK }
+    enum class Command { CLICK, GRAB, RELEASE, CENTER, BACK, ZOOM_IN, ZOOM_OUT }
 
     companion object {
         private const val TAG = "VoiceCommands"
@@ -189,15 +192,18 @@ class VoiceCommands(private val context: Context) {
         private const val MODEL_TARGET_DIR = "model"
 
         /**
-         * Frase transcrita y el comando que dispara. "toca" cubre el "tocá" del voseo; el modelo a veces
-         * transcribe "soltar" como "soldar" y "agarrar" como "agarra".
+         * Frase transcrita y el comando que dispara. "toca", "acerca" y "aleja" cubren el voseo ("tocá",
+         * "acercá", "alejá"); el modelo a veces transcribe "soltar" como "soldar" y "agarrar" como
+         * "agarra".
          */
         private val COMMANDS = mapOf(
             "tocar" to Command.CLICK, "toca" to Command.CLICK,
             "agarrar" to Command.GRAB, "agarra" to Command.GRAB,
             "soltar" to Command.RELEASE, "soldar" to Command.RELEASE,
             "centrar" to Command.CENTER,
-            "volver" to Command.BACK
+            "volver" to Command.BACK,
+            "acercar" to Command.ZOOM_IN, "acerca" to Command.ZOOM_IN,
+            "alejar" to Command.ZOOM_OUT, "aleja" to Command.ZOOM_OUT
         )
 
         /**

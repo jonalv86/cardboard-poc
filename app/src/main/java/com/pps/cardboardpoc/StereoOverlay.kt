@@ -20,12 +20,14 @@ import android.view.Gravity
 import android.view.SurfaceControl
 import android.view.View
 import android.view.WindowManager
+import androidx.annotation.RequiresApi
 import com.google.cardboard.sdk.CardboardView
 import com.google.cardboard.sdk.Initialize
 import com.google.cardboard.sdk.LensDistortion
 import com.google.cardboard.sdk.QrCode
 import com.google.cardboard.sdk.nativetypes.EyeType
 import com.google.cardboard.sdk.nativetypes.UvPoint
+import kotlin.math.roundToInt
 
 /**
  * Ventana flotante que dibuja el frame capturado en estéreo con el Cardboard SDK, para un visor
@@ -42,16 +44,28 @@ class StereoOverlay(private val context: AccessibilityService) {
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val renderer = CardboardOverlayRenderer(context, HeadPointer.createIfAvailable(context))
+    private val renderer = CardboardOverlayRenderer(
+        context, HeadPointer.createIfAvailable(context), ::onMirroredWindow
+    )
 
     private var cardboardView: CardboardView? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var backHitArea: View? = null
 
+    /**
+     * Protege los clones y su ubicación: los ubica el hilo principal al cambiar el tamaño, y el hilo
+     * de render cada vez que se mueve la ventana con zoom.
+     */
+    private val mirrorLock = Any()
+
     /** Clones de la pantalla virtual colgados de esta ventana, uno por ojo. Vacío sin clones. */
     private var mirrors: List<SurfaceControl> = emptyList()
     private var mirrorSourceWidth = 0
     private var mirrorSourceHeight = 0
+
+    /** Rectángulo de cada clon en la ventana y escala que lo llena sin zoom; los calcula [layoutMirrors]. */
+    private var mirrorRects: List<RectF> = emptyList()
+    private var mirrorBaseScale = 1f
     private val mirrorLayoutListener =
         View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutMirrors() }
 
@@ -121,9 +135,11 @@ class StereoOverlay(private val context: AccessibilityService) {
             return false
         }
         hideMirrors()
-        mirrors = listOf(left, right)
-        mirrorSourceWidth = sourceWidth
-        mirrorSourceHeight = sourceHeight
+        synchronized(mirrorLock) {
+            mirrors = listOf(left, right)
+            mirrorSourceWidth = sourceWidth
+            mirrorSourceHeight = sourceHeight
+        }
         mirrors.forEach { root.buildReparentTransaction(it)?.apply() }
         showMirrorUi()
         view.addOnLayoutChangeListener(mirrorLayoutListener)
@@ -162,8 +178,10 @@ class StereoOverlay(private val context: AccessibilityService) {
 
     /** Cambia el tamaño de la pantalla que muestran los clones, al pasarla a vertical u horizontal. */
     fun setMirrorSource(width: Int, height: Int) {
-        mirrorSourceWidth = width
-        mirrorSourceHeight = height
+        synchronized(mirrorLock) {
+            mirrorSourceWidth = width
+            mirrorSourceHeight = height
+        }
         layoutMirrors()
     }
 
@@ -175,11 +193,14 @@ class StereoOverlay(private val context: AccessibilityService) {
         mirrorUi = null
         mirrorUiRenderer = null
         renderer.mirroredImageWidth = 0f
-        val transaction = SurfaceControl.Transaction()
-        mirrors.forEach { transaction.reparent(it, null) }
-        transaction.apply()
-        mirrors.forEach { it.release() }
-        mirrors = emptyList()
+        synchronized(mirrorLock) {
+            val transaction = SurfaceControl.Transaction()
+            mirrors.forEach { transaction.reparent(it, null) }
+            transaction.apply()
+            mirrors.forEach { it.release() }
+            mirrors = emptyList()
+            mirrorRects = emptyList()
+        }
         Log.d(TAG, "clones: quitados")
     }
 
@@ -206,16 +227,11 @@ class StereoOverlay(private val context: AccessibilityService) {
             RectF(it.x - width / 2f, it.y - height / 2f, it.x + width / 2f, it.y + height / 2f)
         }
 
-        val transaction = SurfaceControl.Transaction()
-        mirrors.zip(rects).forEach { (mirror, rect) ->
-            transaction
-                .setLayer(mirror, Int.MAX_VALUE)
-                .setScale(mirror, scale, scale)
-                .setPosition(mirror, rect.left, rect.top)
-                .setCrop(mirror, Rect(0, 0, mirrorSourceWidth, mirrorSourceHeight))
-                .setVisibility(mirror, true)
+        synchronized(mirrorLock) {
+            mirrorRects = rects
+            mirrorBaseScale = scale
+            placeMirrors(JoystickManager.snapshot.window)
         }
-        transaction.apply()
         mirrorUiRenderer?.eyeRects = rects
         renderer.mirroredImageWidth = width / eyeWidth
         Log.d(
@@ -224,6 +240,41 @@ class StereoOverlay(private val context: AccessibilityService) {
                 "lentes=${centers.joinToString { "(${it.x.toInt()},${it.y.toInt()})" }} " +
                 "ventana=${view.width}x${view.height}"
         )
+    }
+
+    /** Vuelve a ubicar los clones con la ventana con zoom [window]. Se llama desde el hilo de render. */
+    private fun onMirroredWindow(window: ZoomWindow) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        synchronized(mirrorLock) { placeMirrors(window) }
+    }
+
+    /**
+     * Ubica los clones para mostrar la parte de la pantalla que se ve con la ventana [window]: cada uno
+     * recorta esa parte y la agranda hasta llenar su rectángulo. Sin zoom muestra la pantalla entera.
+     * Va con [mirrorLock] tomado.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun placeMirrors(window: ZoomWindow) {
+        if (mirrors.isEmpty() || mirrorRects.size != mirrors.size || mirrorSourceWidth == 0) return
+        val scale = mirrorBaseScale * window.zoom
+        val left = window.fractionLeft * mirrorSourceWidth
+        val top = window.fractionTop * mirrorSourceHeight
+        val crop = Rect(
+            left.roundToInt(),
+            top.roundToInt(),
+            (left + window.fractionWidth * mirrorSourceWidth).roundToInt(),
+            (top + window.fractionHeight * mirrorSourceHeight).roundToInt()
+        )
+        val transaction = SurfaceControl.Transaction()
+        mirrors.zip(mirrorRects).forEach { (mirror, rect) ->
+            transaction
+                .setLayer(mirror, Int.MAX_VALUE)
+                .setScale(mirror, scale, scale)
+                .setPosition(mirror, rect.left - left * scale, rect.top - top * scale)
+                .setCrop(mirror, crop)
+                .setVisibility(mirror, true)
+        }
+        transaction.apply()
     }
 
     /**

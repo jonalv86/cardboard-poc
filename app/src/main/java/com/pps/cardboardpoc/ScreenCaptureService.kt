@@ -244,6 +244,7 @@ class ScreenCaptureService : Service() {
         isCapturing = true
         host.setCaptureActive(true)
         startVoiceCommands()
+        JoystickManager.setZoom(ZoomSettings.startLevel(this))
 
         // La conversión Image -> Bitmap copia la pantalla completa por frame; en el main thread
         // trabaría el dibujado del propio overlay.
@@ -280,6 +281,7 @@ class ScreenCaptureService : Service() {
         isCapturing = true
         host.setCaptureActive(true)
         startVoiceCommands()
+        JoystickManager.setZoom(ZoomSettings.startLevel(this))
         captureThread = HandlerThread("CaptureThread").apply { start() }
 
         rebuildCapture()
@@ -661,6 +663,7 @@ class ScreenCaptureService : Service() {
         virtualMode = false
         useOwnServer = false
         portraitState.value = false
+        JoystickManager.setZoom(1f)
         JoystickManager.targetDisplayId = Display.DEFAULT_DISPLAY
 
         synchronized(captureLock) {

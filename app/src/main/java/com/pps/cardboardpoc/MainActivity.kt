@@ -232,6 +232,8 @@ class MainActivity : ComponentActivity() {
             var gyroEnabled by remember { mutableStateOf(prefs.getBoolean("gyro_enabled", true)) }
             var gyroSensitivity by remember { mutableStateOf(prefs.getFloat("gyro_sensitivity", 1.0f)) }
             var gyroAcceleration by remember { mutableStateOf(prefs.getFloat("gyro_acceleration", 1.0f)) }
+            var zoomStartLevel by remember { mutableStateOf(ZoomSettings.startLevel(this)) }
+            var headSmoothingMs by remember { mutableStateOf(ZoomSettings.headSmoothingMs(this)) }
             val deviceHasGyroscope = remember { hasGyroscope() }
             var showSettingsScreen by remember { mutableStateOf(false) }
             var showInfoScreen by remember { mutableStateOf(false) }
@@ -283,6 +285,16 @@ class MainActivity : ComponentActivity() {
                                     gyroAcceleration = accel
                                     prefs.edit().putFloat("gyro_acceleration", accel).apply()
                                 },
+                                zoomStartLevel = zoomStartLevel,
+                                onZoomStartLevelChange = { level ->
+                                    zoomStartLevel = level
+                                    ZoomSettings.setStartLevel(this, level)
+                                },
+                                headSmoothingMs = headSmoothingMs,
+                                onHeadSmoothingChange = { smoothing ->
+                                    headSmoothingMs = smoothing
+                                    ZoomSettings.setHeadSmoothingMs(this, smoothing)
+                                },
                                 voiceEnabled = voiceEnabled.value,
                                 voicePermissionMissing = voicePermissionMissing.value,
                                 onVoiceEnabledChange = { onVoiceEnabledChange(it) },
@@ -297,6 +309,10 @@ class MainActivity : ComponentActivity() {
                                         .putFloat("gyro_sensitivity", 1.0f)
                                         .putFloat("gyro_acceleration", 1.0f)
                                         .apply()
+                                    zoomStartLevel = ZoomSettings.DEFAULT_START_LEVEL
+                                    ZoomSettings.setStartLevel(this, ZoomSettings.DEFAULT_START_LEVEL)
+                                    headSmoothingMs = ZoomSettings.DEFAULT_HEAD_SMOOTHING_MS
+                                    ZoomSettings.setHeadSmoothingMs(this, ZoomSettings.DEFAULT_HEAD_SMOOTHING_MS)
                                 },
                                 fluidConfigured = fluidConfigured.value,
                                 shizukuRunning = shizukuRunning.value,
@@ -1342,6 +1358,10 @@ fun SettingsScreen(
     onGyroEnabledChange: (Boolean) -> Unit,
     onGyroSensitivityChange: (Float) -> Unit,
     onGyroAccelerationChange: (Float) -> Unit,
+    zoomStartLevel: Float,
+    onZoomStartLevelChange: (Float) -> Unit,
+    headSmoothingMs: Float,
+    onHeadSmoothingChange: (Float) -> Unit,
     voiceEnabled: Boolean,
     voicePermissionMissing: Boolean,
     onVoiceEnabledChange: (Boolean) -> Unit,
@@ -1536,6 +1556,88 @@ fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
+                            text = "ZOOM",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Zoom al iniciar",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = String.format(Locale.US, "%.1fx", zoomStartLevel),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Slider(
+                                value = zoomStartLevel,
+                                onValueChange = onZoomStartLevelChange,
+                                valueRange = ZoomLevels.STEPS.first()..ZoomLevels.STEPS.last(),
+                                steps = ZoomLevels.STEPS.size - 2
+                            )
+                        }
+
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Suavizado del movimiento",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = if (headSmoothingMs < 1f) {
+                                        "Apagado"
+                                    } else {
+                                        String.format(Locale.US, "%.0f ms", headSmoothingMs)
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Slider(
+                                value = headSmoothingMs,
+                                onValueChange = onHeadSmoothingChange,
+                                valueRange = 0f..150f,
+                                steps = 14,
+                                enabled = hasGyroscope && gyroEnabled
+                            )
+                        }
+                    }
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
                             text = "COMANDOS DE VOZ",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
@@ -1553,8 +1655,8 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    text = "Decí \"tocar\", \"agarrar\", \"soltar\", \"centrar\" o \"volver\", " +
-                                        "solos y con una pausa entre uno y otro",
+                                    text = "Decí \"tocar\", \"agarrar\", \"soltar\", \"centrar\", \"volver\", " +
+                                        "\"acercar\" o \"alejar\", solos y con una pausa entre uno y otro",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1647,6 +1749,10 @@ fun SettingsScreenPreview() {
             onGyroEnabledChange = {},
             onGyroSensitivityChange = {},
             onGyroAccelerationChange = {},
+            zoomStartLevel = 1.0f,
+            onZoomStartLevelChange = {},
+            headSmoothingMs = 60f,
+            onHeadSmoothingChange = {},
             voiceEnabled = false,
             voicePermissionMissing = true,
             onVoiceEnabledChange = {},

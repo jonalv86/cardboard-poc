@@ -18,12 +18,18 @@ import javax.microedition.khronos.egl.EGLConfig
  * La corrección de barril no se aplica acá: el SDK la aplica después sobre ese framebuffer, con la
  * malla de distorsión que calcula para cada lente.
  *
- * La imagen no se mueve con la cabeza. La orientación de la cabeza va a [headPointer], que es null
- * cuando el teléfono no tiene giroscopio.
+ * De la pantalla capturada dibuja la parte que se ve con el zoom actual ([ZoomWindow]), que sigue al
+ * cursor. La orientación de la cabeza va a [headPointer], que es null cuando el teléfono no tiene
+ * giroscopio.
  */
 class CardboardOverlayRenderer(
     context: Context,
-    private val headPointer: HeadPointer?
+    private val headPointer: HeadPointer?,
+    /**
+     * Recibe la ventana visible cada vez que cambia mientras la imagen la muestran los clones, que
+     * compone el sistema fuera de este renderer. Se llama desde el hilo de render.
+     */
+    private val onMirroredWindow: (ZoomWindow) -> Unit
 ) : CardboardView.Renderer {
 
     /** Último frame publicado por la captura, todavía no subido a la textura. */
@@ -79,11 +85,23 @@ class CardboardOverlayRenderer(
     private var frameAspect = 1f
 
     /**
-     * Medio tamaño de la imagen en coordenadas del ojo (1 = el ojo entero), calculado una vez por
-     * cuadro en [updateImageScale].
+     * Medio tamaño de la imagen sin zoom en coordenadas del ojo (1 = el ojo entero), calculado una vez
+     * por cuadro en [updateImageScale].
      */
     private var imageScaleX = 1f
     private var imageScaleY = 1f
+
+    /** Medio alto hasta el que puede crecer la imagen con zoom, calculado junto con [imageScaleX]. */
+    private var zoomMaxHalfHeight = 1f
+
+    /** Último encaje informado a [JoystickManager], para no volver a informarlo si no cambió. */
+    private var publishedFit: ZoomFit? = null
+
+    /** Cursor y ventana visible de este cuadro, tomados una vez para los dos ojos. */
+    private var view = JoystickManager.snapshot
+
+    /** Última ventana pasada a [onMirroredWindow], o null si los clones no están a la vista. */
+    private var mirroredWindow: ZoomWindow? = null
     private var surfaceWidth = 0
     private var surfaceHeight = 0
 
@@ -133,9 +151,23 @@ class CardboardOverlayRenderer(
         updateImageScale()
         val mirroredWidth = mirroredImageWidth
         mirrored = mirroredWidth > 0f
+        publishZoomFit()
+        // La cabeza mueve el cursor en píxeles de pantalla: con zoom, el mismo giro tiene que recorrer
+        // menos pantalla para cruzar el ojo.
+        val zoom = JoystickManager.snapshot.window.zoom
+        headPointer?.update(headTransform, (if (mirrored) mirroredWidth else imageScaleX) * zoom)
+        view = JoystickManager.snapshot
+        if (mirrored) {
+            // ZoomWindow no cambia de instancia mientras la ventana no se mueve.
+            if (view.window !== mirroredWindow) {
+                mirroredWindow = view.window
+                onMirroredWindow(view.window)
+            }
+        } else {
+            mirroredWindow = null
+        }
         if (!mirrored && showsBlurredBackground() && !blurUpToDate) updateBlur()
-        headPointer?.update(headTransform, if (mirrored) mirroredWidth else imageScaleX)
-        ui.update()
+        ui.update(view)
     }
 
     override fun onDrawEye(eye: CardboardView.Eye) {
@@ -146,35 +178,59 @@ class CardboardOverlayRenderer(
 
         val eyeWidth = surfaceWidth / 2f
         if (textureWidth != 0) {
+            val window = view.window
             if (showsBlurredBackground() && blurUpToDate) drawBlurredBackground()
-            GlQuad.draw(frame, textureId, imageScaleX, imageScaleY, 0f, 0f)
+            GlQuad.draw(
+                frame, textureId, window.quadHalfWidth, window.quadHalfHeight, 0f, 0f,
+                texScaleY = window.fractionHeight, texOffsetY = window.fractionTop,
+                texScaleX = window.fractionWidth, texOffsetX = window.fractionLeft
+            )
             ui.draw(imageScaleX, imageScaleY, eyeWidth)
         }
         ui.drawNotice(eyeWidth / surfaceHeight)
     }
 
     /**
-     * Calcula el tamaño de la imagen dentro de cada ojo. Una imagen horizontal ocupa todo el ancho, sin
-     * estirarse a lo alto. Una vertical no ocupa todo el alto: arriba y abajo quedaría fuera de lo que
-     * se ve a través de la lente. Toma el alto que tendría la misma pantalla en horizontal, agrandado
-     * [PORTRAIT_HEIGHT_RATIO] veces.
+     * Calcula el tamaño de la imagen sin zoom dentro de cada ojo. Una imagen horizontal ocupa todo el
+     * ancho, sin estirarse a lo alto. Una vertical no ocupa todo el alto: arriba y abajo quedaría fuera
+     * de lo que se ve a través de la lente. Toma el alto que tendría la misma pantalla en horizontal,
+     * agrandado [PORTRAIT_HEIGHT_RATIO] veces. Ese mismo alto es el tope hasta el que crece cualquier
+     * imagen con zoom.
      */
     private fun updateImageScale() {
         if (surfaceHeight == 0) return
         val viewportAspect = (surfaceWidth / 2f) / surfaceHeight
+        // En horizontal el aspecto de la pantalla es el mayor entre frameAspect y su inversa.
+        val landscapeAspect = maxOf(frameAspect, 1f / frameAspect)
+        zoomMaxHalfHeight = (viewportAspect / landscapeAspect * PORTRAIT_HEIGHT_RATIO).coerceAtMost(1f)
         if (frameAspect > viewportAspect) {
             imageScaleX = 1f
             imageScaleY = viewportAspect / frameAspect
         } else {
-            // En horizontal el aspecto de la pantalla es 1 / frameAspect.
-            imageScaleY = (viewportAspect * frameAspect * PORTRAIT_HEIGHT_RATIO).coerceAtMost(1f)
+            imageScaleY = zoomMaxHalfHeight
             imageScaleX = frameAspect / viewportAspect * imageScaleY
         }
     }
 
+    /**
+     * Le informa a [JoystickManager] cómo entra la imagen en el ojo, si cambió. Los clones ocupan
+     * siempre su rectángulo entero, y con zoom recortan dentro de él.
+     */
+    private fun publishZoomFit() {
+        val fit = if (mirrored) {
+            MIRRORED_FIT
+        } else {
+            ZoomFit(imageScaleX, imageScaleY, zoomMaxHalfHeight)
+        }
+        if (fit == publishedFit) return
+        publishedFit = fit
+        JoystickManager.setZoomFit(fit)
+    }
+
     /** Si detrás de la imagen va el fondo desenfocado: solo con una imagen más angosta que el ojo. */
     private fun showsBlurredBackground(): Boolean =
-        textureWidth != 0 && imageScaleX < 1f && portraitBackground == PortraitBackground.BLUR &&
+        textureWidth != 0 && view.window.quadHalfWidth < 1f &&
+            portraitBackground == PortraitBackground.BLUR &&
             downsampleProgram != null && blurProgram != null
 
     /**
@@ -262,12 +318,14 @@ class CardboardOverlayRenderer(
         GLES20.glUseProgram(blur.id)
         GLES20.glUniform2f(blur.texel, 1f / blurWidth, 1f / blurHeight)
         GLES20.glUniform1f(blur.edgeFade, BLUR_EDGE_FADE_FRACTION)
-        // Al llenar el ancho del ojo, de la imagen entra a lo alto la misma fracción que ella ocupa
-        // del ancho. En la copia chica el borde de arriba de la imagen quedó en t = 1, al revés que en
-        // el frame, así que la franja se toma invertida.
-        val visible = imageScaleX
+        // La imagen entera, agrandada hasta llenar el ancho del ojo, mide imageScaleY / imageScaleX de
+        // medio alto: de ella entra en la franja la fracción que da su alto. En la copia chica el borde
+        // de arriba de la imagen quedó en t = 1, al revés que en el frame, así que la franja se toma
+        // invertida.
+        val stripHalfHeight = view.window.quadHalfHeight
+        val visible = (stripHalfHeight * imageScaleX / imageScaleY).coerceAtMost(1f)
         GlQuad.draw(
-            blur, blurTextureId, 1f, imageScaleY, 0f, 0f,
+            blur, blurTextureId, 1f, stripHalfHeight, 0f, 0f,
             alpha = BLUR_BRIGHTNESS, texScaleY = -visible, texOffsetY = 0.5f + visible / 2f
         )
     }
@@ -361,5 +419,8 @@ class CardboardOverlayRenderer(
 
         /** Cuánto más alta se ve una imagen vertical que la misma pantalla en horizontal. */
         const val PORTRAIT_HEIGHT_RATIO = 1.1f
+
+        /** Encaje de la imagen de los clones: llena su rectángulo y no crece fuera de él. */
+        val MIRRORED_FIT = ZoomFit(1f, 1f, 1f)
     }
 }
