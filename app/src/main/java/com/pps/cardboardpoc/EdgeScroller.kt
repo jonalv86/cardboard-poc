@@ -112,7 +112,7 @@ class EdgeScroller(service: AccessibilityService) {
             fromX, fromY,
             settleMs = { if (active) 0L else SETTLE_MS },
             target = ::currentTarget,
-            keepDown = { active && progress < 1f },
+            keepDown = { active && (progress < 1f) },
             // Volver a apoyar el dedo en el mismo instante en que el sistema da por levantado el anterior
             // hace que a veces cancele el gesto nuevo; una pausa corta lo evita, como con un dedo real.
             // Si igual se cancela, se reintenta mientras el avance siga activo.

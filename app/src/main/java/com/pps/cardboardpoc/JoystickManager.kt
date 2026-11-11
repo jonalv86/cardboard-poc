@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.KeyEvent
+import kotlin.math.abs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -65,7 +66,7 @@ object JoystickManager {
         /** Parte de la pantalla que se ve en el visor. */
         val window: ZoomWindow,
         /** Posición horizontal, en píxeles de pantalla, en la que está anclada la [ControlBar]. */
-        val barAnchorX: Float
+        val barAnchorX: Float,
     ) {
         /** Lugar de la [ControlBar] en la vista. */
         val barFrame: ControlBar.Frame get() = ControlBar.frame(window, barAnchorX)
@@ -223,7 +224,7 @@ object JoystickManager {
         accessibilityService?.startEdgeScroll(contact.dirX, contact.dirY)
     }
 
-    private val serviceConnectedState = MutableStateFlow(false)
+    private val serviceConnectedState = MutableStateFlow(value = false)
 
     /** Si el servicio de accesibilidad está conectado. Sin él no hay ventana estéreo ni control. */
     val serviceConnected: StateFlow<Boolean> = serviceConnectedState
@@ -274,7 +275,7 @@ object JoystickManager {
         screenHeight = height
         updateCursor()
         rebuildZoomWindow()
-        Log.d(TAG, "Pantalla ${width}x${height}, cursor en ($cursorX, $cursorY)")
+        Log.d(TAG, "Pantalla $width x $height, cursor en ($cursorX, $cursorY)")
         refreshEdgeContact()
     }
 
@@ -353,7 +354,7 @@ object JoystickManager {
     /**
      * Recalcula el cursor, corre la ventana con zoom para seguirlo y decide si la [ControlBar] queda a
      * la vista. La barra está anclada al borde de abajo de la pantalla: con zoom, bajar por la pantalla
-     * la hace avanzar, y la barra aparece recién al llegar abajo de todo.
+     * la hace avanzar, y la barra aparece recién al llegar al borde inferior.
      */
     private fun updateCursor() {
         if (screenWidth == 0 || screenHeight == 0) return
@@ -417,7 +418,7 @@ object JoystickManager {
 
     /**
      * Rehace la ventana visible con el zoom, el encaje y el tamaño de pantalla actuales. Si cambia el
-     * zoom efectivo, el cursor queda donde está, con todo su desplazamiento pasado al joystick, y la
+     * zoom efectivo, el cursor queda donde está, con la totalidad de su desplazamiento pasado al joystick, y la
      * cabeza toma un frente nuevo. Con la [ControlBar] a la vista, el cursor queda sobre el mismo punto
      * de la barra: ella no cambia de tamaño con el zoom, y sin esto el botón de zoom quedaría fuera
      * del cursor después de tocarlo.
@@ -447,8 +448,8 @@ object JoystickManager {
      * no vuelva al centro, con una velocidad proporcional a la inclinación.
      */
     fun setStick(axisX: Float, axisY: Float) {
-        stickX = if (Math.abs(axisX) > DEAD_ZONE) axisX else 0f
-        stickY = if (Math.abs(axisY) > DEAD_ZONE) axisY else 0f
+        stickX = if (abs(axisX) > DEAD_ZONE) axisX else 0f
+        stickY = if (abs(axisY) > DEAD_ZONE) axisY else 0f
         updateMovement()
         refreshEdgeContact()
     }
@@ -561,7 +562,7 @@ object JoystickManager {
      * movimiento conserva la velocidad alcanzada; el tick se detiene solo cuando no queda ninguna.
      */
     private fun updateMovement() {
-        if (moving || (directionX() == 0f && directionY() == 0f)) return
+        if (moving || ((directionX() == 0f) && (directionY() == 0f))) return
         moving = true
         moveStartMs = SystemClock.uptimeMillis()
         lastTickMs = moveStartMs

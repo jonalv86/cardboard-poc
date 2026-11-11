@@ -294,6 +294,7 @@ class JoystickAccessibilityService : AccessibilityService() {
     }
 
     /** Desplaza la vista activa al principio del contenido (tope). */
+    @Suppress("unused")
     fun scrollToTop() {
         val root = rootInActiveWindow ?: return
         val scrollableNode = findScrollableNode(root)
