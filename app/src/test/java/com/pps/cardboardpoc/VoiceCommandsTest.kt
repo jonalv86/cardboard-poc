@@ -14,6 +14,15 @@ class VoiceCommandsTest {
         assertEquals(Command.RELEASE, VoiceCommands.commandFor("soltar"))
         assertEquals(Command.CENTER, VoiceCommands.commandFor("centrar"))
         assertEquals(Command.BACK, VoiceCommands.commandFor("volver"))
+        assertEquals(Command.ZOOM_IN, VoiceCommands.commandFor("acercar"))
+        assertEquals(Command.ZOOM_OUT, VoiceCommands.commandFor("alejar"))
+    }
+
+    @Test
+    fun `el voseo de acercar y alejar cuenta como el comando`() {
+        assertEquals(Command.ZOOM_IN, VoiceCommands.commandFor("acerca"))
+        assertEquals(Command.ZOOM_OUT, VoiceCommands.commandFor("aleja"))
+        assertNull(VoiceCommands.commandFor("acerca de"))
     }
 
     @Test

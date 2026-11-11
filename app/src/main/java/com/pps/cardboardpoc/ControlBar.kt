@@ -2,13 +2,14 @@ package com.pps.cardboardpoc
 
 import android.view.Display
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
- * Barra de controles flotante: una píldora centrada abajo, encima de la imagen capturada, con un botón
+ * Barra de controles flotante: una píldora centrada abajo, encima de la imagen visible, con un botón
  * circular por cada entrada de [buttons]. Está oculta hasta que el cursor llega al borde de abajo, así
  * no tapa lo que la app tenga detrás. Mientras está a la vista, lo que cae sobre la píldora no llega a
- * la app capturada. Las medidas están en píxeles de la pantalla capturada, las mismas unidades que el
- * cursor.
+ * la app capturada. Las medidas y posiciones están en píxeles de la vista ([ZoomWindow]), que sin zoom
+ * son los de la pantalla capturada.
  */
 object ControlBar {
 
@@ -18,7 +19,10 @@ object ControlBar {
         HOME,
 
         /** Pasa la app a vertical, o la devuelve a horizontal. */
-        PORTRAIT
+        PORTRAIT,
+
+        /** Pasa al nivel de zoom siguiente de [ZoomLevels], y del último vuelve a la pantalla entera. */
+        ZOOM
     }
 
     /**
@@ -34,8 +38,8 @@ object ControlBar {
             HOME_ONLY
         }
 
-    private val HOME_ONLY = listOf(Button.HOME)
-    private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT)
+    private val HOME_ONLY = listOf(Button.HOME, Button.ZOOM)
+    private val WITH_PORTRAIT = listOf(Button.HOME, Button.PORTRAIT, Button.ZOOM)
 
     /** Diámetro de cada botón. */
     const val BUTTON_DIAMETER_PX = 112f
@@ -54,6 +58,28 @@ object ControlBar {
 
     /** Margen alrededor de la píldora dentro del cual la barra, ya visible, no se oculta. */
     const val KEEP_MARGIN_PX = 24f
+
+    /**
+     * Lugar de la barra en la vista: la píldora queda centrada a lo ancho de un marco de [width] x
+     * [height] píxeles de la vista, pegada a su borde de abajo, y ese marco está corrido [shiftX] píxeles
+     * respecto del centro de la vista. Las funciones de [ControlBar] trabajan en el marco: una posición
+     * de la vista se pasa a él restándole [shiftX].
+     */
+    data class Frame(val width: Int, val height: Int, val shiftX: Float)
+
+    /**
+     * Marco de la barra con la ventana [window]. La barra está anclada al borde de abajo de la pantalla,
+     * centrada en la posición horizontal [anchorX] en píxeles de pantalla: así se mueve con la imagen, y
+     * con zoom el cursor puede recorrer sus botones aunque la ventana lo siga.
+     */
+    fun frame(window: ZoomWindow, anchorX: Float): Frame {
+        val width = window.viewWidthPx
+        return Frame(
+            width,
+            window.toViewY(window.screenHeight.toFloat()).roundToInt(),
+            window.toViewX(anchorX) - width / 2f
+        )
+    }
 
     /** Rectángulo en píxeles de pantalla. */
     data class Box(val left: Float, val top: Float, val right: Float, val bottom: Float) {

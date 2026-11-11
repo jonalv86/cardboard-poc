@@ -20,7 +20,8 @@ Desarrollado como Práctica Profesional Supervisada.
 | 2 | Renderizado estéreo con Cardboard SDK: distorsión de lente + head tracking | Funcional |
 | 3 | Interacción: accionar sobre la app capturada con el control | Funcional |
 | 4 | Navegación entre apps y modo fluido (fps completos, sin computadora) | Funcional |
-| — | Comandos de voz offline: tocar, agarrar, soltar, centrar y volver | Funcional |
+| — | Comandos de voz offline: tocar, agarrar, soltar, centrar, volver, acercar y alejar | Funcional |
+| — | Zoom de la pantalla (1×, 1,5× y 2×) desde la barra o por voz | Funcional |
 
 ---
 
@@ -89,9 +90,22 @@ Para detener la captura, usá la **X** del visor o la notificación: CeluVR vuel
 ### Ajustes
 
 El engranaje de la pantalla principal abre **Ajustes**: el giroscopio (activarlo, sensibilidad y
-aceleración del puntero), los comandos de voz y el modo fluido. **Restablecer** vuelve el giroscopio y la
-voz a sus valores por defecto. Los cambios del giroscopio y de la voz se aplican al iniciar la siguiente
-sesión.
+aceleración del puntero), el zoom (con qué zoom arranca cada sesión y cuánto se suaviza el movimiento de la
+cabeza), los comandos de voz y el modo fluido. **Restablecer** vuelve el giroscopio, el zoom y la voz a
+sus valores por defecto. Los cambios del giroscopio, del zoom y de la voz se aplican al iniciar la
+siguiente sesión.
+
+### Zoom
+
+El botón con la lupa de la barra del visor agranda la pantalla: cada toque pasa de **1×** a **1,5×**, a
+**2×** y vuelve a 1×, y el botón muestra el nivel. También se puede decir **"acercar"** y **"alejar"**.
+
+Con zoom, la imagen ocupa más del ojo y lo que no entra queda afuera, como en una pantalla de cine: girar
+la cabeza recorre la pantalla, con la retícula siempre en el centro. Al llegar al borde real de la pantalla
+la imagen se frena, y recién ahí aparecen las flechas del avance por borde o, abajo de todo, la barra. La
+barra se queda quieta mientras está a la vista, así se pueden mirar sus botones.
+
+Cada sesión arranca con el zoom elegido en **Ajustes › Zoom** (1× si no se cambió).
 
 ### Videos y juegos fluidos (modo fluido, opcional)
 
@@ -159,6 +173,8 @@ Con el visor puesto, el cursor también se maneja con la voz, sin internet:
 | **"soltar"** | Levanta el dedo de "agarrar" (si no, se suelta solo a los 15 s) |
 | **"centrar"** | Lleva el cursor al centro |
 | **"volver"** | Atrás |
+| **"acercar"** | Sube un nivel de zoom, hasta 2× |
+| **"alejar"** | Baja un nivel de zoom, hasta 1× |
 
 Se activa en **Ajustes › Comandos de voz › "Control por voz"**, que pide el permiso de micrófono. Cada
 comando tiene que ir **solo y con una pausa corta** antes del siguiente: una frase que contiene la palabra
@@ -177,7 +193,7 @@ siguiente sesión.
 adb logcat -s CardboardCapture
 ```
 
-Al mover la cabeza tienen que cambiar los valores de `pitch`, `yaw` y `roll`. En esta fase la
+Al mover la cabeza tienen que cambiar los valores de `pitch`, `yaw` y `roll`. Sin zoom, la
 imagen **no se mueve con la cabeza** — es lo planeado; el log es la forma de confirmar que el
 sensor lee bien.
 
@@ -189,6 +205,7 @@ sensor lee bien.
   sistema operativo, no un error nuestro. En modo fluido se ven, pero sin corrección de lente.
 - **El botón Vertical solo existe en modo fluido.** En modo normal la orientación la fija la pantalla del
   celular.
+- **Con Disney+ el zoom no funciona.** Con Netflix y las otras apps con DRM sí.
 - **El resaltado del setup del modo fluido usa los textos de Ajustes de AOSP y One UI.** En celulares de
   otras marcas puede no encontrar la opción a tocar; el teclado del código funciona igual.
 - **La corrección de las lentes es aproximada.** Se usan los valores del Cardboard original de
@@ -209,6 +226,7 @@ app/src/main/java/com/pps/cardboardpoc/
   ScreenCaptureService.kt       Captura la pantalla y entrega los frames
   StereoOverlay.kt              La ventana flotante y su ciclo de vida
   CardboardOverlayRenderer.kt   Dibuja el frame en cada ojo con OpenGL
+  ZoomWindow.kt                 Qué parte de la pantalla se ve con zoom y cómo sigue al cursor
   VoiceCommands.kt              Escucha el micrófono y traduce los comandos de voz
   PanelActivity.kt              El panel de apps que se ve dentro del visor
   adb/                          Modo fluido: emparejamiento, conexión al adbd local y setup guiado
@@ -254,4 +272,4 @@ visor de VR propio del proyecto.
 
 Los íconos de la barra del visor (`app/src/main/res/drawable/ic_*_rounded.xml`) son
 [Material Symbols](https://github.com/google/material-design-icons) estilo Rounded, de Google,
-licencia Apache 2.0.
+licencia Apache 2.0. La lupa del botón de zoom (`ic_zoom.xml`) es propia del proyecto.

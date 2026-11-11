@@ -11,8 +11,8 @@ import kotlin.math.sign
 
 /**
  * Convierte la orientación de la cabeza que entrega el head tracker del Cardboard SDK en un
- * desplazamiento del cursor. Toma como frente la orientación del inicio de la captura, o la del
- * último centrado. Se alimenta una vez por cuadro desde el hilo de render.
+ * desplazamiento del cursor. Toma como frente la orientación del inicio de la captura, la del último
+ * centrado o la del último cambio de zoom. Se alimenta una vez por cuadro desde el hilo de render.
  */
 class HeadPointer(
     private val sensitivity: Float = 1.0f,
@@ -32,16 +32,18 @@ class HeadPointer(
     private var lastUpdateNanos = 0L
 
     private var handledRecenters = JoystickManager.recenterCount
+    private var handledZoomChanges = JoystickManager.zoomChangeCount
 
     /**
      * Lee la orientación de la cabeza del cuadro actual. [imageWidthFraction] es la parte del ancho del
-     * ojo que ocupa la imagen: 1 en horizontal, menos en vertical.
+     * ojo que ocupa la pantalla entera: 1 en horizontal sin zoom, menos en vertical, más con zoom.
      */
     fun update(headTransform: HeadTransform, imageWidthFraction: Float) {
+        val zoomChanges = JoystickManager.zoomChangeCount
         // Los primeros cuadros pueden llegar antes de que la fusión de sensores se asiente; tomar el
         // frente ahí lo dejaría corrido.
         if (framesSeen++ < WARMUP_FRAMES) {
-            JoystickManager.setHeadOffset(0f, 0f)
+            JoystickManager.setHeadOffset(0f, 0f, zoomChanges)
             return
         }
 
@@ -50,8 +52,9 @@ class HeadPointer(
         val yaw = eulerAngles[1]
         val now = System.nanoTime()
         val recenters = JoystickManager.recenterCount
-        if (!hasReference || recenters != handledRecenters) {
+        if (!hasReference || recenters != handledRecenters || zoomChanges != handledZoomChanges) {
             handledRecenters = recenters
+            handledZoomChanges = zoomChanges
             referenceYaw = yaw
             referencePitch = pitch
             hasReference = true
@@ -81,7 +84,8 @@ class HeadPointer(
         // baja la tasa de refresco.
         val elapsedMs = (now - lastUpdateNanos) / 1_000_000f
         lastUpdateNanos = now
-        val weight = 1f - exp(-elapsedMs / SMOOTHING_MS)
+        val smoothing = smoothingMs
+        val weight = if (smoothing <= 0f) 1f else 1f - exp(-elapsedMs / smoothing)
         smoothedYaw += (effectiveYaw - smoothedYaw) * weight
         smoothedPitch += (effectivePitch - smoothedPitch) * weight
 
@@ -90,11 +94,12 @@ class HeadPointer(
         // en cualquier dirección. La escala va por el ancho del ojo y no por el de la imagen: una imagen
         // vertical no llena el ojo a lo ancho, y el cursor tiene que acompañar a la cabeza igual que en
         // horizontal.
-        val eyeWidthPx = JoystickManager.screenWidth / imageWidthFraction.coerceIn(0.05f, 1f)
-        val pixelsPerRadian = (eyeWidthPx / Math.toRadians(FULL_WIDTH_DEGREES).toFloat()) * sensitivity
+        val eyeWidthPx = JoystickManager.screenWidth / imageWidthFraction.coerceAtLeast(0.05f)
+        val pixelsPerRadian =
+            (eyeWidthPx / Math.toRadians(fullWidthDegrees.toDouble()).toFloat()) * sensitivity
         val offsetX = -smoothedYaw * pixelsPerRadian
         val offsetY = -smoothedPitch * pixelsPerRadian
-        JoystickManager.setHeadOffset(offsetX, offsetY)
+        JoystickManager.setHeadOffset(offsetX, offsetY, zoomChanges)
 
         if (framesSeen % LOG_EVERY_N_FRAMES == 0) {
             Log.d(
@@ -111,14 +116,21 @@ class HeadPointer(
         private const val WARMUP_FRAMES = 30
         private const val LOG_EVERY_N_FRAMES = 60
 
-        /** Giro de la cabeza, en grados, que lleva el cursor de un costado del ojo al otro. */
-        private const val FULL_WIDTH_DEGREES = 80.0
+        /**
+         * Giro de la cabeza, en grados, que lleva el cursor de un costado del ojo al otro. Si coincide
+         * con el campo visual de la lente, la imagen con zoom que sigue al cursor se ve quieta en el
+         * espacio al girar. Se puede cambiar desde cualquier hilo.
+         */
+        @Volatile
+        var fullWidthDegrees = 80f
 
         /**
-         * Constante de tiempo del filtro contra el temblor, en ms. Más alta deja el cursor más quieto
-         * pero lo hace seguir a la cabeza con más retraso.
+         * Constante de tiempo del filtro contra el temblor, en ms; 0 lo apaga. Más alta deja el cursor
+         * más quieto pero lo hace seguir a la cabeza con más retraso. La toma de los ajustes cada sesión
+         * nueva, y se puede cambiar desde cualquier hilo.
          */
-        private const val SMOOTHING_MS = 60f
+        @Volatile
+        var smoothingMs = ZoomSettings.DEFAULT_HEAD_SMOOTHING_MS
 
         /**
          * Con true se ignora el giroscopio aunque el teléfono lo tenga, para probar el modo solo
@@ -134,10 +146,12 @@ class HeadPointer(
             val gyroEnabled = prefs.getBoolean("gyro_enabled", true)
             val sensitivity = prefs.getFloat("gyro_sensitivity", 1.0f)
             val acceleration = prefs.getFloat("gyro_acceleration", 1.0f)
+            smoothingMs = ZoomSettings.headSmoothingMs(context)
             val enabled = hasGyroscope && gyroEnabled && !SIMULATE_NO_GYROSCOPE
             Log.d(
                 TAG,
-                "giroscopio=$hasGyroscope gyroEnabled=$gyroEnabled sensitivity=$sensitivity acceleration=$acceleration -> " +
+                "giroscopio=$hasGyroscope gyroEnabled=$gyroEnabled sensitivity=$sensitivity acceleration=$acceleration " +
+                    "suavizado=${smoothingMs} ms -> " +
                     if (enabled) "cursor con cabeza y joystick" else "cursor solo con joystick"
             )
             return if (enabled) HeadPointer(sensitivity, acceleration) else null

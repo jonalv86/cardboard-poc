@@ -25,6 +25,7 @@
 - [Diálogos del sistema y volver al cerrar](#dialogos-y-cierre)
 - [Apps recientes en el panel](#recientes)
 - [Modo fluido guiado desde Ajustes](#modo-fluido-guiado)
+- [Zoom de la pantalla](#zoom)
 - [Cómo diagnosticamos](#diagnostico)
 - [Convenciones del equipo](#convenciones)
 - [Próximos pasos](#proximos-pasos)
@@ -1540,11 +1541,13 @@ Un engranaje en la pantalla principal abre **Ajustes**, con lo que antes estaba 
 - **Sensor de giroscopio:** activarlo o no, **Sensibilidad** y **Aceleración del puntero**. Con
   aceleración por encima de 1, el movimiento de la cabeza pasa por una curva que suaviza los movimientos
   chicos y amplía los grandes.
+- **Zoom:** con qué zoom arranca cada sesión y el suavizado del movimiento de la cabeza (ver "Zoom de la
+  pantalla").
 - **Comandos de voz** (ver "Comandos de voz").
 - **Modo fluido** (ver "Modo fluido guiado desde Ajustes").
-- **Restablecer**, que vuelve el giroscopio y la voz a sus valores por defecto.
+- **Restablecer**, que vuelve el giroscopio, el zoom y la voz a sus valores por defecto.
 
-Los cambios del giroscopio y de la voz se aplican al iniciar la siguiente sesión del visor.
+Los cambios del giroscopio, del zoom y de la voz se aplican al iniciar la siguiente sesión del visor.
 
 ---
 
@@ -1699,6 +1702,99 @@ vincular de nuevo después de olvidar funciona sin reiniciar la app.
 - **Los textos y extras de Ajustes son de AOSP y One UI.** En otro fabricante el resaltado puede no
   encontrar la fila; el flotante y el código funcionan igual.
 - **Olvidar apaga la depuración inalámbrica**, aunque otra app la esté usando. Apagar el switch no la toca.
+
+---
+
+<a id="zoom"></a>
+## Zoom de la pantalla
+
+Issue #36. **Fechas:** 10 y 11 de noviembre de 2026. **Equipo de prueba:** el mismo Samsung (SM-S938B,
+Android 16).
+
+El texto chico de muchas apps casi no se leía en el visor. El issue pedía dos cosas: un zoom común y,
+aprovechando que es VR, una pantalla más grande que el campo visual que se recorre girando la cabeza. Se
+hizo en dos fases: primero una prueba de factibilidad, después el control en la barra, la voz y los
+ajustes.
+
+### Factibilidad
+
+- **La resolución alcanza.** La captura tiene la resolución de la pantalla física y cada ojo recibe la
+  mitad del ancho: sin zoom, cada ojo muestra la captura achicada a la mitad (en vertical, a la cuarta
+  parte). Hasta 2× no se agranda ningún píxel. Comparando el mismo texto a resolución real, sin zoom un
+  subtítulo mide unos 7 píxeles y casi no se lee; desde 1,5× se lee y hasta 2,5× sigue limpio.
+- **No cuesta fluidez.** El zoom solo cambia qué parte de la textura se dibuja: 120 cuadros por segundo
+  sin ninguno perdido, con y sin zoom, quieto y con la ventana moviéndose (medido con
+  `dumpsys SurfaceFlinger --latency` sobre la capa del visor).
+- **En 2D y no en 3D.** El SDK permite poner la pantalla fija en el espacio y mover la cámara con la
+  cabeza, pero eso cambia lo que ya funciona (sin zoom, girar la cabeza mostraría negro alrededor) y no
+  sirve con los clones de las apps con DRM, que el sistema solo puede recortar, escalar y mover en 2D. Una
+  ventana 2D que sigue a la cabeza da el mismo efecto de pantalla de cine.
+
+### Cómo funciona
+
+`ZoomWindow` es la parte de la pantalla capturada que se ve. Con zoom, la imagen crece hasta ocupar el
+ancho del ojo y, a lo alto, hasta el mismo tope que ya usaba la imagen vertical (1,1 veces el alto de la
+horizontal): más arriba o más abajo queda fuera de lo que se ve por la lente. Lo que no entra queda afuera,
+y la ventana recorre la pantalla siguiendo al cursor.
+
+- **El cursor sigue en píxeles de la pantalla**, que es donde caen los gestos: el zoom cambia solo qué se
+  dibuja. Los toques no necesitan ninguna conversión, y el borde de la pantalla solo se alcanza en el
+  borde real, así que las flechas del avance por borde no aparecen mientras la imagen todavía se puede
+  mover.
+- **La UI del visor no se agranda.** La retícula, el brillo del borde y la barra van en "píxeles de la
+  vista", que siguen a la imagen pero mantienen el tamaño de siempre.
+- **La ventana sigue al cursor centrada.** Se probaron dos formas: la vista centrada en el cursor, que
+  al girar la cabeza desplaza la imagen como una pantalla fija, y la vista que se mueve solo cuando el
+  cursor empuja su borde. La segunda deja la retícula pegada a la esquina de la lente, donde casi no se
+  ve. Quedó la primera, y con el visor puesto la imagen se siente quieta al girar.
+- **La cabeza y el joystick van más despacio con zoom**, en la misma proporción, así en el visor se
+  sienten iguales. Al cambiar de nivel, el punto que está bajo la retícula queda en su lugar y la cabeza
+  toma como frente la orientación de ese momento; si no, el cursor saltaría.
+
+### El control
+
+Se comparó con un mockup un solo botón que pasa de nivel en nivel contra dos botones para alejar y
+acercar. Quedó **un botón con una lupa**: 1× → 1,5× → 2× → 1×, con el nivel escrito y resaltado mientras
+hay zoom. El número se dibujó primero chico y a resolución real medía 5 píxeles; se achicó la lupa y se
+agrandó el número.
+
+Al probarlo aparecieron dos problemas de la barra con zoom:
+
+1. **Los botones de los costados eran inalcanzables.** Con la vista centrada en el cursor, la retícula
+   queda siempre en el medio, y la barra también. Ahora la barra aparece centrada donde se está mirando y,
+   mientras está a la vista, queda fija en la pantalla: al girar la cabeza la retícula recorre sus
+   botones. Sin zoom se comporta igual que antes.
+2. **Después de tocar el botón de zoom, el cursor quedaba fuera del botón.** La barra no cambia de tamaño
+   con el zoom pero el recorrido del cursor sí. Ahora, al cambiar de nivel con la barra a la vista, el
+   cursor queda sobre el mismo punto de la barra.
+
+Además:
+
+- **Voz:** "acercar" y "alejar" (y "acercá", "alejá") suben o bajan un nivel, sin dar la vuelta.
+- **Ajustes › Zoom:** "Zoom al iniciar" y "Suavizado del movimiento" de la cabeza, que antes estaba fijo
+  en 60 ms. Al cerrar el visor el zoom vuelve al de Ajustes. Con el visor puesto, sin suavizado no se
+  notó diferencia; quedó en 60 ms por defecto.
+- **Apps con DRM:** los clones recortan la parte visible y la agrandan (`setCrop`, `setScale` y
+  `setPosition`), desde el hilo de render, cada vez que la ventana se mueve.
+
+### Cómo se probó
+
+Casi todo se probó sin ponerse el visor, manejando el celular por USB: el servidor de la pantalla
+virtual se lanza con `app_process` desde la computadora, el visor se inicia con Iniciar, y dos atajos de
+debug (`debug.ZOOM` y `debug.CURSOR`) cambian el zoom y mueven o tocan con el cursor. Las capturas de la
+pantalla virtual (`screencap -d`) dan las coordenadas exactas, y las de la pantalla física muestran el
+visor tal como se ve. Así se verificaron la nitidez, la fluidez, los toques con 2× y 2,5×, las flechas y
+la barra en el borde real, el modo vertical y Netflix. Con el visor puesto se probó que la imagen quede
+quieta al girar, el suavizado y la voz (4 de 4).
+
+### Limitaciones conocidas
+
+- **Con Disney+ el zoom no funciona.** Con Netflix sí. Queda para un issue aparte.
+- **No se probaron con el visor puesto** el arrastre con zoom, las apps con DRM girando la cabeza (los
+  clones se reubican en cada movimiento), el modo normal y el cursor solo con joystick.
+- **No se evaluó el mareo** en sesiones largas: quien se maree, saca el zoom.
+- **Después de reinstalar la app, a veces el servicio de accesibilidad queda activado pero sin
+  conectar**, e Iniciar lleva a Ajustes de Accesibilidad. Se arregla apagándolo y prendiéndolo.
 
 ---
 
@@ -1880,9 +1976,12 @@ libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` 
 - [x] **Modo fluido guiado desde Ajustes:** pasos con resaltado, flotante del código que se abre solo,
       switch para apagarlo sin perder la vinculación, una sola entrada "CeluVR" y loader con errores al
       iniciar.
+- [x] **Zoom de la pantalla** (issue #36): botón en la barra, "acercar" y "alejar" por voz, zoom al
+      iniciar y suavizado en Ajustes, también con las apps con DRM (ver "Zoom de la pantalla").
 
 **Lo que sigue ahora:**
 
+- [ ] Zoom con Disney+ (issue aparte).
 - [ ] Probar los comandos de voz en un celular con Android 13 o anterior.
 
 - [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al

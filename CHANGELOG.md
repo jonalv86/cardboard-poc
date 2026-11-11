@@ -10,13 +10,20 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
 
 ### Agregado
 
+- **Zoom de la pantalla en el visor** (issue #36): un botón con una lupa en la barra pasa de 1× a 1,5×, a
+  2× y vuelve a 1×, y muestra el nivel. Con zoom, la parte que se ve sigue a la cabeza como una pantalla de
+  cine; las flechas del avance por borde y la barra aparecen recién en el borde real de la pantalla.
+  Funciona también con las apps con DRM. Al cerrar el visor vuelve al zoom de Ajustes.
+- **Comandos de voz "acercar" y "alejar"**: suben o bajan un nivel de zoom.
+- **Ajustes › Zoom:** "Zoom al iniciar" (1×, 1,5× o 2×) y "Suavizado del movimiento" de la cabeza (de 0 a
+  150 ms; antes estaba fijo en 60 ms).
 - **Comandos de voz offline** (issue #14): "tocar", "agarrar", "soltar", "centrar" y "volver" manejan el
   cursor sin tocar el celular. Solo cuentan dichos solos, así un video con sonido no los dispara. El
   agarre por voz se suelta solo a los 15 s.
 - **Ajustes › Comandos de voz:** switch "Control por voz", apagado por defecto. Pide el permiso de
   micrófono; si se niega, queda apagado y avisa, con un botón a los permisos de la app.
 - **Pantalla de Ajustes**, desde el engranaje de la pantalla principal: giroscopio (activarlo,
-  sensibilidad y aceleración del puntero), comandos de voz, modo fluido y "Restablecer".
+  sensibilidad y aceleración del puntero), zoom, comandos de voz, modo fluido y "Restablecer".
 - **Video con DRM en modo fluido** (Netflix, Disney+, Prime Video, Max y otras): el visor muestra copias de
   la pantalla que compone el sistema, sin corrección de lente.
 - **Apps recientes en el panel:** sección "RECIENTES" con las apps abiertas durante la sesión.
@@ -63,6 +70,9 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   propio; con Shizuku no hay copias de pantalla.
 - El servicio de accesibilidad declara `isAccessibilityTool`: Google Play revisa qué apps lo hacen.
 - El resaltado del setup lee los textos de la app Ajustes del celular; está probado en One UI (es-US).
+- El zoom recorta el frame que ya se captura, sin subir la resolución: cada ojo muestra la captura
+  achicada a la mitad, así que hasta 2× no se agranda ningún píxel. Con las apps con DRM recorta el sistema.
+- Con Disney+ el zoom no funciona; queda para un issue aparte.
 
 ## [1.1.0] — 2026-10-22
 

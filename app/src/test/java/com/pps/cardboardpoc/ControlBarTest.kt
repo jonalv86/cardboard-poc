@@ -70,6 +70,28 @@ class ControlBarTest {
         assertFalse(nextVisible(true, 0f, bounds.centerY))
     }
 
+    @Test
+    fun `con tres botones el de zoom es el ultimo`() {
+        val buttons = listOf(Button.HOME, Button.PORTRAIT, Button.ZOOM)
+        val centerY = ControlBar.bounds(WIDTH, HEIGHT, buttons).centerY
+        val zoomX = ControlBar.buttonCenterX(2, WIDTH, HEIGHT, buttons)
+        assertEquals(Button.ZOOM, ControlBar.buttonAt(zoomX, centerY, WIDTH, HEIGHT, buttons))
+    }
+
+    @Test
+    fun `sin zoom el marco de la barra es la pantalla`() {
+        val window = ZoomWindow.of(WIDTH, HEIGHT, FIT, 1f)
+        assertEquals(ControlBar.Frame(WIDTH, HEIGHT, 0f), ControlBar.frame(window, WIDTH / 2f))
+    }
+
+    @Test
+    fun `con zoom la barra se corre con su ancla y queda en el borde de abajo de la pantalla`() {
+        val window = ZoomWindow.of(WIDTH, HEIGHT, FIT, 2f).follow(WIDTH / 2f, HEIGHT.toFloat(), 0f)
+        val frame = ControlBar.frame(window, WIDTH / 2f + 100f)
+        assertEquals(200f, frame.shiftX, 0.5f)
+        assertEquals(window.viewHeight, frame.height.toFloat(), 1f)
+    }
+
     private fun nextVisible(visible: Boolean, x: Float, y: Float) =
         ControlBar.nextVisible(visible, x, y, WIDTH, HEIGHT, HOME_ONLY)
 
@@ -77,5 +99,6 @@ class ControlBarTest {
         const val WIDTH = 2340
         const val HEIGHT = 1080
         val HOME_ONLY = listOf(Button.HOME)
+        val FIT = ZoomFit(1f, 0.5f, 0.55f)
     }
 }

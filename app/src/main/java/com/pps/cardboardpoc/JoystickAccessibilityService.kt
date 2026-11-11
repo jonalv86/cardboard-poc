@@ -37,6 +37,29 @@ class JoystickAccessibilityService : AccessibilityService() {
         const val ACTION_DEBUG_EDGE_SCROLL = "com.pps.cardboardpoc.debug.AVANCE"
         const val EXTRA_DEBUG_EDGE_X = "x"
         const val EXTRA_DEBUG_EDGE_Y = "y"
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: ajusta el zoom del visor. Cada extra
+         * es opcional y es un float: [EXTRA_DEBUG_ZOOM_LEVEL] (1 a [JoystickManager.MAX_ZOOM]),
+         * [EXTRA_DEBUG_ZOOM_DEAD_ZONE] (0 a 1), [EXTRA_DEBUG_ZOOM_MAX_HALF_HEIGHT] (0 vuelve al del
+         * render), [EXTRA_DEBUG_HEAD_SMOOTHING_MS] y [EXTRA_DEBUG_HEAD_FULL_WIDTH_DEGREES].
+         */
+        const val ACTION_DEBUG_ZOOM = "com.pps.cardboardpoc.debug.ZOOM"
+        const val EXTRA_DEBUG_ZOOM_LEVEL = "nivel"
+        const val EXTRA_DEBUG_ZOOM_DEAD_ZONE = "zona"
+        const val EXTRA_DEBUG_ZOOM_MAX_HALF_HEIGHT = "alto"
+        const val EXTRA_DEBUG_HEAD_SMOOTHING_MS = "suavizado"
+        const val EXTRA_DEBUG_HEAD_FULL_WIDTH_DEGREES = "grados"
+
+        /**
+         * Atajo de prueba por adb, solo en compilaciones depurables: lleva el cursor a ([EXTRA_DEBUG_CURSOR_X],
+         * [EXTRA_DEBUG_CURSOR_Y]), floats en píxeles de pantalla, y con [EXTRA_DEBUG_CURSOR_CLICK] en
+         * true toca donde quedó, como el gatillo apretado y soltado.
+         */
+        const val ACTION_DEBUG_CURSOR = "com.pps.cardboardpoc.debug.CURSOR"
+        const val EXTRA_DEBUG_CURSOR_X = "x"
+        const val EXTRA_DEBUG_CURSOR_Y = "y"
+        const val EXTRA_DEBUG_CURSOR_CLICK = "tocar"
     }
 
     private val pressFinger = VirtualFinger(this, "gatillo")
@@ -53,6 +76,46 @@ class JoystickAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val debugZoomReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            fun Intent.floatExtra(name: String): Float? =
+                if (hasExtra(name)) getFloatExtra(name, 0f) else null
+
+            intent.floatExtra(EXTRA_DEBUG_HEAD_SMOOTHING_MS)?.let { HeadPointer.smoothingMs = it }
+            intent.floatExtra(EXTRA_DEBUG_HEAD_FULL_WIDTH_DEGREES)?.let {
+                HeadPointer.fullWidthDegrees = it
+            }
+            intent.floatExtra(EXTRA_DEBUG_ZOOM_DEAD_ZONE)?.let { JoystickManager.setZoomDeadZone(it) }
+            intent.floatExtra(EXTRA_DEBUG_ZOOM_MAX_HALF_HEIGHT)?.let {
+                JoystickManager.setZoomMaxHalfHeight(it)
+            }
+            intent.floatExtra(EXTRA_DEBUG_ZOOM_LEVEL)?.let { JoystickManager.setZoom(it) }
+            Log.d(
+                TAG,
+                "Zoom por adb: cabeza suavizado=${HeadPointer.smoothingMs} ms " +
+                    "grados=${HeadPointer.fullWidthDegrees}"
+            )
+        }
+    }
+
+    private val debugCursorReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.hasExtra(EXTRA_DEBUG_CURSOR_X) || intent.hasExtra(EXTRA_DEBUG_CURSOR_Y)) {
+                JoystickManager.moveCursorTo(
+                    intent.getFloatExtra(EXTRA_DEBUG_CURSOR_X, JoystickManager.cursorX),
+                    intent.getFloatExtra(EXTRA_DEBUG_CURSOR_Y, JoystickManager.cursorY)
+                )
+            }
+            Log.d(
+                TAG,
+                "Cursor por adb: (${JoystickManager.cursorX}, ${JoystickManager.cursorY}) " +
+                    "${JoystickManager.snapshot.window} barra=${JoystickManager.controlBarVisible} " +
+                    "borde=${JoystickManager.edgeContact?.let { "(${it.dirX}, ${it.dirY})" }}"
+            )
+            if (intent.getBooleanExtra(EXTRA_DEBUG_CURSOR_CLICK, false)) JoystickManager.voiceClick()
+        }
+    }
+
     /**
      * Vincula el servicio activo al JoystickManager al momento de la conexión para permitir
      * el despacho de comandos de entrada.
@@ -66,6 +129,14 @@ class JoystickAccessibilityService : AccessibilityService() {
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             ContextCompat.registerReceiver(
                 this, debugEdgeScrollReceiver, IntentFilter(ACTION_DEBUG_EDGE_SCROLL),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            ContextCompat.registerReceiver(
+                this, debugZoomReceiver, IntentFilter(ACTION_DEBUG_ZOOM),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            ContextCompat.registerReceiver(
+                this, debugCursorReceiver, IntentFilter(ACTION_DEBUG_CURSOR),
                 ContextCompat.RECEIVER_EXPORTED
             )
         }
@@ -107,6 +178,8 @@ class JoystickAccessibilityService : AccessibilityService() {
         edgeScroller.release()
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             unregisterReceiver(debugEdgeScrollReceiver)
+            unregisterReceiver(debugZoomReceiver)
+            unregisterReceiver(debugCursorReceiver)
         }
         if (ScreenCaptureService.isCapturing) {
             startService(ScreenCaptureService.stopIntent(this))

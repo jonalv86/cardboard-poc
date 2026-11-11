@@ -35,7 +35,7 @@ class MirrorUiRenderer(context: Context) : GLSurfaceView.Renderer {
 
     override fun onDrawFrame(gl: GL10?) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        ui.update()
+        ui.update(JoystickManager.snapshot)
         for (rect in eyeRects) {
             // En GL el origen está abajo a la izquierda; en la ventana, arriba.
             GLES20.glViewport(
