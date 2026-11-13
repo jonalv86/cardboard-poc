@@ -1,0 +1,45 @@
+diff --git a/sdk/CMakeLists.txt b/sdk/CMakeLists.txt
+index 6463e21..15c1b86 100644
+--- a/sdk/CMakeLists.txt
++++ b/sdk/CMakeLists.txt
+@@ -151,3 +151,40 @@ set_property(
+     APPEND
+     PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cardboard_api.lds"
+ )
++
++# === Cardboard Java API JNI ===
++# El modulo :sdk compila las fuentes Java de ../java_api, pero este CMake solo construye el plugin
++# de Unity. Sin este target no existe el libcardboard_sdk_jni.so que carga Initialize.java, y la
++# app revienta con UnsatisfiedLinkError al usar el Java API.
++# Sin version script a proposito: cardboard_api.lds tiene "local: *" y esconderia los simbolos
++# Java_com_google_cardboard_sdk_*.
++add_library(cardboard_sdk_jni SHARED
++    ${cardboard_v1_srcs}
++    ${general_srcs}
++    ${sensors_srcs}
++    ${sensors_android_srcs}
++    ${jni_util_srcs}
++    ${util_srcs}
++    ${qrcode_srcs}
++    ${screen_params_srcs}
++    ${device_params_srcs}
++    ${rendering_opengl_srcs}
++    ${rendering_vulkan_srcs}
++    ${rendering_vulkan_wrapper_srcs}
++    ../java_api/src/main/jni/cardboard_jni.cc)
++
++if(CARDBOARDSDK_RENDERING_VULKAN)
++    target_compile_definitions(cardboard_sdk_jni PUBLIC VK_USE_PLATFORM_ANDROID_KHR=1)
++    target_link_libraries(cardboard_sdk_jni PUBLIC dl)
++endif()
++
++if(CARDBOARDSDK_RENDERING_GLESv3)
++    target_link_libraries(cardboard_sdk_jni PUBLIC ${GLESv3_LIB})
++endif()
++
++target_link_libraries(cardboard_sdk_jni
++    PUBLIC
++    ${ANDROID_LIB}
++    ${GLESv2_LIB}
++    ${LOG_LIB}
++)

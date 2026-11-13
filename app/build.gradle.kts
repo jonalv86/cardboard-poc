@@ -6,12 +6,19 @@ plugins {
 }
 
 /**
- * Baja el modelo de voz de Vosk y lo deja como asset en [outputDir]/model-es, con el archivo uuid que
- * StorageService.sync compara para decidir si vuelve a copiarlo al almacenamiento de la app.
+ * Baja el modelo de voz de Vosk, o lo toma de [localZip], y lo deja como asset en [outputDir]/model-es,
+ * con el archivo uuid que StorageService.sync compara para decidir si vuelve a copiarlo al
+ * almacenamiento de la app.
  */
 abstract class DownloadVoskModel : DefaultTask() {
     @get:Input
     abstract val modelName: Property<String>
+
+    /** Zip del modelo ya bajado; si está, no se baja de alphacephei.com. */
+    @get:InputFile
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val localZip: RegularFileProperty
 
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -24,9 +31,10 @@ abstract class DownloadVoskModel : DefaultTask() {
 
     @TaskAction
     fun download() {
-        val zip = File(temporaryDir, "${modelName.get()}.zip")
-        val url = URI("https://alphacephei.com/vosk/models/${modelName.get()}.zip").toURL()
-        url.openStream().use { input -> zip.outputStream().use { input.copyTo(it) } }
+        val zip = localZip.orNull?.asFile ?: File(temporaryDir, "${modelName.get()}.zip").also { target ->
+            val url = URI("https://alphacephei.com/vosk/models/${modelName.get()}.zip").toURL()
+            url.openStream().use { input -> target.outputStream().use { input.copyTo(it) } }
+        }
         val modelDir = outputDir.dir("model-es").get().asFile
         files.delete { delete(outputDir) }
         files.copy {
@@ -37,13 +45,15 @@ abstract class DownloadVoskModel : DefaultTask() {
             includeEmptyDirs = false
         }
         File(modelDir, "uuid").writeText(modelName.get())
-        zip.delete()
+        if (!localZip.isPresent) zip.delete()
     }
 }
 
 val downloadVoskModel = tasks.register<DownloadVoskModel>("downloadVoskModel") {
     modelName.set("vosk-model-small-es-0.42")
     outputDir.set(layout.buildDirectory.dir("generated/voskModel"))
+    // Por si alphacephei.com deja de publicar el modelo: -PvoskModelZip=<ruta al zip>.
+    localZip.fileProvider(providers.gradleProperty("voskModelZip").map { file(it) })
 }
 
 androidComponents {
@@ -61,8 +71,8 @@ android {
         applicationId = "com.pps.cardboardpoc"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
