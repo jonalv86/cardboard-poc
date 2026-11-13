@@ -6,7 +6,7 @@ Todos los cambios notables de CeluVR. El formato sigue, a grandes rasgos,
 
 El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.md).
 
-## [Sin publicar]
+## [1.3.0] — 2026-11-12
 
 ### Agregado
 
@@ -14,10 +14,21 @@ El detalle técnico de cada hito está en la [bitácora](docs/BITACORA_TECNICA.m
   al tope de la lista de apps; en las demás apps, al principio de su lista principal.
 - **Arrastre que acelera contra el borde** (issue #26): con el gatillo apretado, seguir empujando contra
   un borde continúa el arrastre y lo va acelerando; al dejar de empujar frena de a poco.
+- **Compilar sin las descargas externas:** `-PvoskModelZip=<ruta>` usa un zip local del modelo de voz en
+  lugar de bajarlo de alphacephei.com, y el README explica cómo reemplazar las dependencias de JitPack.
+- **El parche del Cardboard SDK, versionado** en `docs/cardboard-sdk/`, con los pasos para recompilarlo y
+  verificar el `.aar`.
+- **Guía de instalación** en `docs/guia-instalacion.html`: los pasos para instalar el APK, con una captura de
+  cada pantalla. Se abre con el navegador, sin internet.
 
 ### Cambiado
 
 - Con el panel de apps al frente, la barra ya no muestra el botón Inicio.
+- **README:** "Qué hace falta" (Android 14 o posterior para el visor) y "Limitaciones" en un solo lugar;
+  los pasos de instalación, corregidos y probados desde un archivo; el APK que se entrega y su firma; un
+  mapa del código por subsistema.
+- **Bitácora:** cómo probar el visor sin ponérselo, una sola lista de próximos pasos, y las versiones de
+  Gradle y la rama principal (`master`) al día.
 
 ## [1.2.0] — 2026-11-11
 

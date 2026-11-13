@@ -46,7 +46,7 @@ rato largo: **la mayoría de los problemas que parecen del código son en realid
 |---|---|
 | **Android Studio** | **Ladybug (2024.2.1) o superior.** No es opcional, ver abajo. |
 | **JDK** | 17 o superior (el equipo está usando 21). |
-| **Celular de prueba** | Android 8.0 o superior. En Android 7 la app no instala. |
+| **Celular de prueba** | Android 14 o superior. La app se instala desde Android 8.0, pero el visor no arranca antes de Android 14. El resto (visor, control, permisos) está en [Qué hace falta](../README.md#qué-hace-falta), en el README. |
 | **NDK / CMake** | **No hacen falta.** El `.aar` del SDK ya está compilado y versionado en `app/libs/`. |
 
 Con eso alcanza: `./gradlew :app:assembleDebug` tiene que compilar sin tocar nada más.
@@ -65,7 +65,7 @@ Ojo con el síntoma, porque despista: por línea de comandos compila perfecto mi
 imports en rojo y se niega a sincronizar. **Si te pasa eso, no busques el problema en el código.**
 
 Y al actualizar aparece un segundo escalón: las versiones nuevas de Android Studio traen un Java
-25 adentro, y Gradle 8.9 soporta hasta el 22. Sale un diálogo pidiendo elegir una JVM — hay que
+25 adentro, y Gradle 8.14.5 corre hasta el 24. Sale un diálogo pidiendo elegir una JVM — hay que
 elegir **JVM 21**, que es la que venimos usando por línea de comandos. No conviene resolverlo
 subiendo Gradle: sería mover una versión que hoy funciona, sin necesidad.
 
@@ -73,7 +73,7 @@ subiendo Gradle: sería mover una versión que hoy funciona, sin necesidad.
 
 **No aceptes subir el plugin de Android a la versión 9.** Android Studio lo va a ofrecer con un
 banner apenas abras el proyecto. La 9 tiene cambios que rompen, y las versiones que están fijadas
-hoy (Gradle 8.9, plugin 8.7.3) son las que están probadas y funcionando. Si alguien lo sube, que
+hoy (Gradle 8.14.5, plugin 8.7.3) son las que están probadas y funcionando. Si alguien lo sube, que
 sea como una tarea propia y con tiempo, no de paso.
 
 **No actualices el Cardboard SDK a la ligera.** Recompilarlo no es bajar una dependencia: hay que
@@ -86,7 +86,8 @@ No debería hacer falta, pero si hay que actualizarlo:
 
 1. Clonar `github.com/googlevr/cardboard` **fuera** de este proyecto.
 2. Instalar, desde el SDK Manager: **NDK `29.0.14206865`**, **CMake** y **Android SDK Platform 35**.
-3. Aplicar el parche al archivo de compilación nativa del SDK (Fase 2, problema 1). **Este paso es
+3. Aplicar el parche al archivo de compilación nativa del SDK (Fase 2, problema 1), que está en
+   [`docs/cardboard-sdk/`](cardboard-sdk/README.md) con los comandos de cada paso. **Este paso es
    obligatorio y no está en la documentación de Google.**
 4. Compilar el módulo del SDK y copiar el `.aar` resultante a `app/libs/`.
 5. Verificar que el `.aar` quedó con **dos** librerías nativas por arquitectura, no una.
@@ -272,9 +273,10 @@ más adelante nos costó un crash — está contado abajo.
    Para verificar que salió bien: el `.aar` tiene que quedar con **dos** librerías nativas por
    arquitectura en vez de una. Pasa de 566 KB a 988 KB, y el APK de 12,9 a 14,6 MB.
 
-   **Ojo con esto a futuro:** el parche vive en el clon del SDK, que no es un repositorio nuestro
-   y por lo tanto no se versiona. Queda escrito acá porque es la única forma de reproducirlo.
-   Quien actualice el SDK va a tener que aplicarlo de nuevo a mano.
+   **Ojo con esto a futuro:** el parche se hizo en el clon del SDK, que no es un repositorio nuestro.
+   Por eso está versionado aparte, en [`docs/cardboard-sdk/`](cardboard-sdk/README.md): el diff contra
+   el tag `v1.35.0`, cómo aplicarlo y cómo verificar el `.aar`. Quien actualice el SDK va a tener que
+   aplicarlo de nuevo, y a mano si el archivo de Google cambió.
 
 2. **El SDK nos obligó a modernizar el proyecto entero, y también el Android Studio.**
 
@@ -1787,7 +1789,7 @@ debug (`debug.ZOOM` y `debug.CURSOR`) cambian el zoom y mueven o tocan con el cu
 pantalla virtual (`screencap -d`) dan las coordenadas exactas, y las de la pantalla física muestran el
 visor tal como se ve. Así se verificaron la nitidez, la fluidez, los toques con 2× y 2,5×, las flechas y
 la barra en el borde real, el modo vertical y Netflix. Con el visor puesto se probó que la imagen quede
-quieta al girar, el suavizado y la voz (4 de 4).
+quieta al girar, el suavizado y la voz (4 de 4). Los comandos están en "Cómo diagnosticamos", punto 15.
 
 ### Limitaciones conocidas
 
@@ -2094,16 +2096,64 @@ servicio de accesibilidad y hay que volver a activarlo.
 libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` muestra la causa real
 (acá, `CERTIFICATE_VERIFY_FAILED`) y las claves que cargó.
 
+**15. Probar el visor sin ponérselo.** *(Zoom)*
+
+Todo lo que no depende de mover la cabeza se puede probar con el celular por USB: el dibujo, los toques,
+los bordes, el zoom y los fps. Hace falta el APK de debug, porque los atajos de abajo solo existen en una
+compilación depurable, y el servicio de accesibilidad activo.
+
+1. **El servidor de la pantalla virtual, lanzado desde la computadora.** Reemplaza al modo fluido, así
+   que no hace falta Wi-Fi ni vincular. Primero, la ruta del APK; después, el servidor, en una terminal
+   aparte porque queda corriendo:
+
+   ```
+   adb shell pm path com.pps.cardboardpoc
+   adb shell "CLASSPATH=<ruta sin el package:> app_process / com.pps.cardboardpoc.vdisplay.VDisplayServer"
+   ```
+
+   La ruta cambia con cada reinstalación: después de un `adb install -r`, hay que lanzarlo de nuevo.
+2. **Iniciar.** Con el servidor vivo, tocar Iniciar arranca el visor en la pantalla virtual, sin el
+   diálogo de compartir. Si se toca por coordenadas (`adb shell input tap`), antes hay que confirmar con
+   `adb shell dumpsys window | grep mCurrentFocus` que CeluVR está al frente: una coordenada que cae en otra
+   app toca lo que haya ahí.
+3. **Manejar el visor con atajos.** Abrir una app desde el panel, volver al panel, mover el cursor y tocar
+   (en píxeles de la pantalla), cambiar el zoom y arrancar el avance por borde (`x` e `y` en -1, 0 o 1;
+   los dos en 0 lo frenan):
+
+   ```
+   adb shell am start -n com.pps.cardboardpoc/.MainActivity --activity-single-top --es abrir <paquete>
+   adb shell am start -n com.pps.cardboardpoc/.MainActivity --activity-single-top --ez inicio true
+   adb shell am broadcast -a com.pps.cardboardpoc.debug.CURSOR --ef x 540 --ef y 1200 --ez tocar true
+   adb shell am broadcast -a com.pps.cardboardpoc.debug.ZOOM --ef nivel 2
+   adb shell am broadcast -a com.pps.cardboardpoc.debug.AVANCE --ei x 0 --ei y 1
+   ```
+
+   Sin `--activity-single-top`, Android solo trae la tarea al frente y no le pasa el intent a la
+   actividad: el atajo no hace nada, aunque `am start` diga que lo entregó.
+4. **Mirar el resultado.** La pantalla física muestra el estéreo con la lente, tal como se ve en el visor:
+   `adb exec-out screencap -p > fisica.png`. La pantalla virtual se ve sin distorsión y da las
+   coordenadas exactas: su id está en la línea "CeluVR" de `adb shell dumpsys SurfaceFlinger --display-id`
+   (cambia con cada cambio de tamaño), y se captura con `adb exec-out screencap -d <id> -p > virtual.png`.
+5. **Medir los fps.** `adb shell dumpsys SurfaceFlinger --list` da el nombre de la capa del visor
+   (`SurfaceView[...]@0(BLAST)#N`), y `adb shell dumpsys SurfaceFlinger --latency '<capa>'`, los tiempos
+   de los últimos cuadros: la diferencia entre dos líneas seguidas de la columna del medio es lo que duró
+   cada cuadro.
+
+Después de reinstalar, a veces el servicio de accesibilidad queda activado pero sin conectar (en
+`adb shell dumpsys accessibility`, no figura en "Bound services"), e Iniciar lleva a Ajustes: hay que
+apagar y prender "Control de CeluVR" a mano. Lo que no se puede probar así es mover la cabeza ni el
+control físico (`input keyevent` no pasa por el servicio, ver el punto 7).
+
 ---
 
 <a id="convenciones"></a>
 ## Convenciones del equipo
 
-- **Ramas:** `usuario/feature/descripción` (ej. `jona/feature/cardboard-sdk`).
+- **Ramas:** `usuario/feature/descripción` o `usuario/fix/descripción` (ej. `jona/feature/cardboard-sdk`).
 - **Commits:** al cerrar cada hito funcional, no solo al final de una fase completa.
-- **Pull Requests:** toda rama se mergea a `main` vía PR, revisado por los otros dos
+- **Pull Requests:** toda rama se mergea a `master` vía PR, revisado por los otros dos
   integrantes antes de aceptar.
-- **Antes de ramificar una fase nueva:** `git checkout main && git pull` para partir
+- **Antes de ramificar una fase nueva:** `git checkout master && git pull` para partir
   siempre de la versión más actualizada.
 
 ---
@@ -2148,13 +2198,22 @@ libadb informa cualquier rechazo como "hay que emparejar". `adb logcat -s adbd` 
 - [x] **"Ir arriba" en la barra e Inicio oculto con el panel al frente** (issue #31), y **arrastre que
       acelera contra el borde** (issue #26), salvo su estado visual en la retícula.
 
-**Lo que sigue ahora:**
+**Lo que sigue ahora**, en orden de prioridad:
+
+1. [ ] **Corrección de lente en el video con DRM:** que los clones de la pantalla tengan la misma
+       corrección de los bordes que el resto del visor.
+2. [ ] **Probar en otros equipos:** otras marcas, Android 14 y 15, y la RAM en un celular de verdad. Hasta
+       ahora todo se probó en un solo Samsung con Android 16, y la RAM solo se midió en el emulador (ver
+       "Limitaciones" en el README).
+3. [ ] **Un relevamiento de bugs a fondo.** Se priorizó llegar con el alcance, y quedó detalle fino sin
+       revisar.
+4. [ ] **Una beta con varios usuarios**, para tener devolución del uso real.
+5. [ ] **Leer el QR del visor** desde Ajustes, para cargar su perfil óptico (issue #13, abierto).
+
+Más chicos:
 
 - [ ] Mostrar en la retícula cuándo el arrastre contra el borde acelera o frena (lo que falta del #26).
 - [ ] Probar con el control "Ir arriba" en Chrome, Instagram y YouTube, y el arrastre que acelera.
-
-- [ ] Probar los comandos de voz en un celular con Android 13 o anterior.
-
 - [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al
       apretar el gatillo).
 - [ ] Que el botón de encendido no termine la sesión del visor.
