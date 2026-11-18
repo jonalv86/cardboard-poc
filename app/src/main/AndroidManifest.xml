@@ -20,12 +20,8 @@
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- El Cardboard SDK declara estos permisos para escanear el QR del visor y detectarlo por
-         NFC. Sin perfil de visor el SDK usa los parámetros de Cardboard V1, así que nada de eso
-         corre y el usuario no tiene por qué ver un pedido de cámara. -->
-    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <!-- El escáner QR de Cardboard necesita acceso a la cámara. -->
     <uses-permission android:name="android.permission.NFC" tools:node="remove" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
 
     <!-- El panel del visor lista todas las apps lanzables; sin esto Android 11+ solo devuelve
          algunas. -->
@@ -103,7 +99,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/joystick_accessibility_service_config" />
         </service>
-        <activity android:name="com.google.cardboard.sdk.QrCodeCaptureActivity" tools:node="remove" />
         <activity android:name="com.google.cardboard.sdk.HeadsetDetectionActivity" tools:node="remove" />
     </application>
 

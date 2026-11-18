@@ -1,5 +1,9 @@
 package com.pps.cardboardpoc
 
+import com.google.cardboard.sdk.Initialize
+import com.google.cardboard.sdk.QrCode
+import com.google.cardboard.sdk.deviceparams.DeviceParamsUtils
+import com.google.cardboard.sdk.qrcode.CardboardParamsUtils
 import android.Manifest
 import android.app.Activity
 import android.app.ActivityOptions
@@ -103,6 +107,8 @@ import rikka.shizuku.Shizuku
 class MainActivity : ComponentActivity() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
+    /** Nombre del perfil de visor Cardboard actualmente configurado. */
+    private val viewerProfile = mutableStateOf("Cardboard V1 (predeterminado)")
 
     /** Si el servicio figura activado en Ajustes, aunque no esté corriendo. */
     private val accessibilityEnabled = mutableStateOf(false)
@@ -210,6 +216,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Inicializa el SDK para poder consultar y modificar los parámetros del visor.
+        Initialize.initialize(this)
+        refreshViewerProfile()
         mediaProjectionManager =
             getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
@@ -232,6 +241,7 @@ class MainActivity : ComponentActivity() {
             var gyroEnabled by remember { mutableStateOf(prefs.getBoolean("gyro_enabled", true)) }
             var gyroSensitivity by remember { mutableStateOf(prefs.getFloat("gyro_sensitivity", 1.0f)) }
             var gyroAcceleration by remember { mutableStateOf(prefs.getFloat("gyro_acceleration", 1.0f)) }
+            var gyroDeadzone by remember { mutableStateOf(prefs.getFloat("gyro_deadzone", 0.0f)) }
             var zoomStartLevel by remember { mutableStateOf(ZoomSettings.startLevel(this)) }
             var headSmoothingMs by remember { mutableStateOf(ZoomSettings.headSmoothingMs(this)) }
             val deviceHasGyroscope = remember { hasGyroscope() }
@@ -273,6 +283,7 @@ class MainActivity : ComponentActivity() {
                                 gyroEnabled = gyroEnabled,
                                 gyroSensitivity = gyroSensitivity,
                                 gyroAcceleration = gyroAcceleration,
+                                gyroDeadzone = gyroDeadzone,
                                 onGyroEnabledChange = { enabled ->
                                     gyroEnabled = enabled
                                     prefs.edit().putBoolean("gyro_enabled", enabled).apply()
@@ -284,6 +295,10 @@ class MainActivity : ComponentActivity() {
                                 onGyroAccelerationChange = { accel ->
                                     gyroAcceleration = accel
                                     prefs.edit().putFloat("gyro_acceleration", accel).apply()
+                                },
+                                onGyroDeadzoneChange = { deadzone ->
+                                    gyroDeadzone = deadzone
+                                    prefs.edit().putFloat("gyro_deadzone", deadzone).apply()
                                 },
                                 zoomStartLevel = zoomStartLevel,
                                 onZoomStartLevelChange = { level ->
@@ -299,16 +314,23 @@ class MainActivity : ComponentActivity() {
                                 voicePermissionMissing = voicePermissionMissing.value,
                                 onVoiceEnabledChange = { onVoiceEnabledChange(it) },
                                 onOpenAppPermissions = { openAppPermissions() },
+                                viewerProfile = viewerProfile.value,
+                                onScanViewerQrCode = { scanViewerQrCode() },
                                 onResetToDefaults = {
                                     onVoiceEnabledChange(false)
                                     gyroEnabled = true
                                     gyroSensitivity = 1.0f
                                     gyroAcceleration = 1.0f
+                                    gyroDeadzone = 0.0f
                                     prefs.edit()
                                         .putBoolean("gyro_enabled", true)
                                         .putFloat("gyro_sensitivity", 1.0f)
                                         .putFloat("gyro_acceleration", 1.0f)
+                                        .putFloat("gyro_deadzone", 0.0f)
                                         .apply()
+                                    // Restaurar el perfil Cardboard V1 predeterminado.
+                                    CardboardParamsUtils.saveCardboardV1DeviceParams(this)
+                                    refreshViewerProfile()
                                     zoomStartLevel = ZoomSettings.DEFAULT_START_LEVEL
                                     ZoomSettings.setStartLevel(this, ZoomSettings.DEFAULT_START_LEVEL)
                                     headSmoothingMs = ZoomSettings.DEFAULT_HEAD_SMOOTHING_MS
@@ -377,6 +399,7 @@ class MainActivity : ComponentActivity() {
         refreshFluidState()
         FluidSetup.dismiss()
         refreshVoiceState()
+        refreshViewerProfile()
     }
 
     /** Relee la preferencia y el permiso de voz: el permiso se puede quitar desde los ajustes del sistema. */
@@ -391,6 +414,24 @@ class MainActivity : ComponentActivity() {
             voicePermissionMissing.value = true
         }
         voiceEnabled.value = VoiceCommands.shouldListen(this)
+    }
+
+    private fun refreshViewerProfile() {
+        val savedParams = QrCode.getSavedDeviceParams()
+
+        if (savedParams == null) {
+            viewerProfile.value = "Cardboard V1 (predeterminado)"
+            return
+        }
+
+        val params = DeviceParamsUtils.parseCardboardDeviceParams(savedParams)
+
+        val vendor = params?.vendor?.takeIf { it.isNotBlank() }
+        val model = params?.model?.takeIf { it.isNotBlank() }
+
+        val profileName = listOfNotNull(vendor, model).joinToString(" · ")
+
+        viewerProfile.value = profileName.ifBlank { "Visor personalizado" }
     }
 
     private fun onVoiceEnabledChange(enabled: Boolean) {
@@ -408,6 +449,9 @@ class MainActivity : ComponentActivity() {
         startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
     }
 
+    private fun scanViewerQrCode() {
+        QrCode.scanQrCodeAndSaveDeviceParams()
+    }
     override fun onDestroy() {
         mainHandler.removeCallbacks(viewerStartTimeout)
         getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(wifiCallback)
@@ -943,11 +987,6 @@ fun StatusChip(
 fun AboutScreen(onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val violet = MaterialTheme.colorScheme.primary
-    val context = LocalContext.current
-    val versionName = remember {
-        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
-            .getOrNull()
-    }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -998,7 +1037,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Versión ${versionName.orEmpty()}",
+                        text = "Versión 1.1",
                         style = MaterialTheme.typography.bodyMedium,
                         color = violet,
                         fontWeight = FontWeight.SemiBold
@@ -1360,9 +1399,11 @@ fun SettingsScreen(
     gyroEnabled: Boolean,
     gyroSensitivity: Float,
     gyroAcceleration: Float,
+    gyroDeadzone: Float,
     onGyroEnabledChange: (Boolean) -> Unit,
     onGyroSensitivityChange: (Float) -> Unit,
     onGyroAccelerationChange: (Float) -> Unit,
+    onGyroDeadzoneChange: (Float) -> Unit,
     zoomStartLevel: Float,
     onZoomStartLevelChange: (Float) -> Unit,
     headSmoothingMs: Float,
@@ -1371,6 +1412,8 @@ fun SettingsScreen(
     voicePermissionMissing: Boolean,
     onVoiceEnabledChange: (Boolean) -> Unit,
     onOpenAppPermissions: () -> Unit,
+    viewerProfile: String,
+    onScanViewerQrCode: () -> Unit,
     onResetToDefaults: () -> Unit,
     fluidConfigured: Boolean,
     shizukuRunning: Boolean,
@@ -1422,7 +1465,45 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Spacer(modifier = Modifier.height(8.dp))
+                // Cardboard Viewer Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        Text(
+                            text = "VISOR CARDBOARD",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
 
+                        Text(
+                            text = "Perfil configurado: $viewerProfile",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        Text(
+                            text = "Escaneá el código QR del visor para configurar sus parámetros ópticos.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Button(
+                            onClick = onScanViewerQrCode,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Escanear código QR")
+                        }
+                    }
+                }
                 // Gyroscope Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1526,6 +1607,42 @@ fun SettingsScreen(
                                 onValueChange = onGyroAccelerationChange,
                                 valueRange = 1.0f..2.0f,
                                 steps = 10,
+                                enabled = hasGyroscope && gyroEnabled
+                            )
+                        }
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        // Deadzone Slider Option
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Zona muerta (Deadzone)",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium
+                                )
+
+                                Text(
+                                    text = if (gyroDeadzone == 0f) {
+                                        "Desactivada"
+                                    } else {
+                                        String.format(Locale.US, "%.1f°", gyroDeadzone)
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Slider(
+                                value = gyroDeadzone,
+                                onValueChange = onGyroDeadzoneChange,
+                                valueRange = 0f..5f,
+                                steps = 9,
                                 enabled = hasGyroscope && gyroEnabled
                             )
                         }
@@ -1751,9 +1868,11 @@ fun SettingsScreenPreview() {
             gyroEnabled = true,
             gyroSensitivity = 1.0f,
             gyroAcceleration = 1.0f,
+            gyroDeadzone = 0.0f,
             onGyroEnabledChange = {},
             onGyroSensitivityChange = {},
             onGyroAccelerationChange = {},
+            onGyroDeadzoneChange = {},
             zoomStartLevel = 1.0f,
             onZoomStartLevelChange = {},
             headSmoothingMs = 60f,
@@ -1762,6 +1881,8 @@ fun SettingsScreenPreview() {
             voicePermissionMissing = true,
             onVoiceEnabledChange = {},
             onOpenAppPermissions = {},
+            viewerProfile = "Cardboard V1 (predeterminado)",
+            onScanViewerQrCode = {},
             onResetToDefaults = {},
             fluidConfigured = false,
             shizukuRunning = false,

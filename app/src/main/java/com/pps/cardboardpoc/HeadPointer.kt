@@ -16,7 +16,8 @@ import kotlin.math.sign
  */
 class HeadPointer(
     private val sensitivity: Float = 1.0f,
-    private val acceleration: Float = 1.0f
+    private val acceleration: Float = 1.0f,
+    private val deadzoneDegrees: Float = 0.0f
 ) {
 
     private val eulerAngles = FloatArray(3)
@@ -64,8 +65,23 @@ class HeadPointer(
             Log.d(TAG, "frente: yaw=${degrees(yaw)} pitch=${degrees(pitch)}")
         }
 
-        val deltaYaw = wrapAngle(yaw - referenceYaw)
-        val deltaPitch = pitch - referencePitch
+        val rawDeltaYaw = wrapAngle(yaw - referenceYaw)
+        val rawDeltaPitch = pitch - referencePitch
+
+        // Ignorar movimientos pequeños para evitar el drifting del giroscopio.
+        val deadzoneRadians = Math.toRadians(deadzoneDegrees.toDouble()).toFloat()
+
+        val deltaYaw = if (abs(rawDeltaYaw) < deadzoneRadians) {
+            0f
+        } else {
+            rawDeltaYaw
+        }
+
+        val deltaPitch = if (abs(rawDeltaPitch) < deadzoneRadians) {
+            0f
+        } else {
+            rawDeltaPitch
+        }
 
         // Aplicar curva de aceleración si acceleration > 1.0 (suaviza movimientos sutiles y escala los amplios)
         val effectiveYaw = if (acceleration > 1.0f) {
@@ -146,6 +162,7 @@ class HeadPointer(
             val gyroEnabled = prefs.getBoolean("gyro_enabled", true)
             val sensitivity = prefs.getFloat("gyro_sensitivity", 1.0f)
             val acceleration = prefs.getFloat("gyro_acceleration", 1.0f)
+            val deadzoneDegrees = prefs.getFloat("gyro_deadzone", 0.0f)
             smoothingMs = ZoomSettings.headSmoothingMs(context)
             val enabled = hasGyroscope && gyroEnabled && !SIMULATE_NO_GYROSCOPE
             Log.d(
@@ -154,7 +171,11 @@ class HeadPointer(
                     "suavizado=${smoothingMs} ms -> " +
                     if (enabled) "cursor con cabeza y joystick" else "cursor solo con joystick"
             )
-            return if (enabled) HeadPointer(sensitivity, acceleration) else null
+            return if (enabled) {
+                HeadPointer(sensitivity, acceleration, deadzoneDegrees)
+            } else {
+                null
+            }
         }
 
         /** Lleva un ángulo a [-π, π], para que cruzar el ±180° del yaw no dé un salto de una vuelta. */
