@@ -1963,6 +1963,26 @@ capturas de la pantalla virtual antes y después de tocarlo.
 - **El arrastre que acelera (#26) no se probó**: por adb no se puede mantener el gatillo apretado.
 - **Falta el estado visual del #26** en la retícula.
 
+## Lectura del QR del visor Cardboard
+
+Se incorporó la posibilidad de escanear el código QR de un visor Cardboard desde la pantalla de Ajustes, con el objetivo de adaptar el renderizado estereoscópico a las características ópticas de cada dispositivo, como los parámetros de las lentes y la corrección de distorsión.
+
+Para implementar esta funcionalidad se utilizaron las herramientas del SDK de Google Cardboard. Mediante `QrCode.scanQrCodeAndSaveDeviceParams()` se escanea el código y se guardan los parámetros obtenidos, mientras que `QrCode.getSavedDeviceParams()` permite recuperar el perfil almacenado. En Ajustes se agregó una sección **Visor**, que permite iniciar el escaneo y consultar el fabricante y modelo del dispositivo, cuando están disponibles.
+
+Los parámetros guardados se aplican desde `StereoOverlay`, adaptando el renderizado de cada ojo al perfil del visor. Si no existe un perfil personalizado, se utiliza la configuración predeterminada de Cardboard V1. El SDK se encarga de persistir los parámetros entre sesiones. Además, si el escaneo se cancela o el QR no es válido, se conserva el perfil anterior. También se agregó una opción para restaurar la configuración predeterminada.
+
+Para habilitar el escaneo fue necesario declarar nuevamente en el `AndroidManifest.xml` el permiso `CAMERA` y la actividad `QrCodeCaptureActivity` del SDK. NFC continúa excluido, ya que no es necesario para esta funcionalidad.
+
+## Deadzone del giroscopio
+
+Se incorporó una opción para configurar una zona muerta (*deadzone*) del giroscopio desde la pantalla de Ajustes. Esta funcionalidad busca reducir los movimientos involuntarios del puntero provocados por pequeñas variaciones en las lecturas del sensor, especialmente en dispositivos donde el giroscopio presenta cierta inestabilidad.
+
+La configuración permite establecer un umbral entre 0° y 5°, con incrementos de 0,5°. Cuando el valor es 0°, la funcionalidad queda desactivada. La preferencia se almacena en `SharedPreferences` mediante la clave `gyro_deadzone`, por lo que se conserva entre sesiones. El control se deshabilita cuando el dispositivo no dispone de giroscopio o cuando este se encuentra desactivado.
+
+La aplicación del umbral se realiza en `HeadPointer`, donde se evalúan por separado los desplazamientos de los ejes yaw y pitch respecto de la orientación de referencia. Si alguno de estos desplazamientos se encuentra dentro de la zona muerta, se ignora para el movimiento del puntero. Si supera el umbral, se conserva el desplazamiento calculado.
+
+Esta configuración no reemplaza el mecanismo de recentrado existente: el botón B continúa permitiendo volver a centrar el puntero, independientemente del valor de la deadzone.
+
 ---
 
 <a id="diagnostico"></a>
@@ -2197,6 +2217,8 @@ control físico (`input keyevent` no pasa por el servicio, ver el punto 7).
       a través de los clones (ver "Disney+, Max y Flow en el visor").
 - [x] **"Ir arriba" en la barra e Inicio oculto con el panel al frente** (issue #31), y **arrastre que
       acelera contra el borde** (issue #26), salvo su estado visual en la retícula.
+- [x] **Leer el QR del visor** desde Ajustes, para cargar su perfil óptico (issue #13).
+- [x] **Deadzone** Reducir el temblor del cursor con el giroscopio por medio de una zona muerta.
 
 **Lo que sigue ahora**, en orden de prioridad:
 
@@ -2208,14 +2230,11 @@ control físico (`input keyevent` no pasa por el servicio, ver el punto 7).
 3. [ ] **Un relevamiento de bugs a fondo.** Se priorizó llegar con el alcance, y quedó detalle fino sin
        revisar.
 4. [ ] **Una beta con varios usuarios**, para tener devolución del uso real.
-5. [ ] **Leer el QR del visor** desde Ajustes, para cargar su perfil óptico (issue #13, abierto).
 
 Más chicos:
 
 - [ ] Mostrar en la retícula cuándo el arrastre contra el borde acelera o frena (lo que falta del #26).
 - [ ] Probar con el control "Ir arriba" en Chrome, Instagram y YouTube, y el arrastre que acelera.
-- [ ] Reducir el temblor del cursor con el giroscopio (filtro adaptativo, o congelarlo un instante al
-      apretar el gatillo).
 - [ ] Que el botón de encendido no termine la sesión del visor.
 - [ ] Decidir qué hacer con los dos botones libres del control (`BUTTON_A` y `R1`).
 - [ ] Que el servicio deje pasar las teclas del control cuando no hay captura, así el control se
